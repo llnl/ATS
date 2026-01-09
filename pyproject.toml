@@ -14,7 +14,7 @@ license = "BSD-3-Clause"
 publish = false
 readme = "README.md"
 repository = "https://github.com/LLNL/ATS"
-version = "7.0.121"
+version = "7.0.122"
 
 [tool.poetry.dependencies]
 python = ">=3.8"

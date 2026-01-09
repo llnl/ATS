@@ -13,6 +13,7 @@ import os
 import sys
 import time
 import subprocess
+import re
 from math import ceil
 
 from ats import terminal
@@ -22,13 +23,13 @@ from ats.util.generic_utils import runCommand
 from ats import configuration
 from ats import log
 
-
 class FluxScheduled(lcMachines.LCMachineCore):
     """
     A class to initialize Flux if necessary and return job statements
     from ATS tests.
     """
 
+    _cached_nodes = None  # static/class variable
     debug = False
     debug_canRunNow = False
     debug_noteLaunch = False
@@ -102,6 +103,57 @@ class FluxScheduled(lcMachines.LCMachineCore):
             log(("DEBUG: FluxScheduled init : self.numProcsAvailable     =%i" % (self.numProcsAvailable)), echo=True)
             log(("DEBUG: FluxScheduled init : self.numNodesAvailable     =%i" % (self.numNodesAvailable)), echo=True)
             log(("DEBUG: FluxScheduled init : self.numGPUsAvailable      =%i" % (self.numGPUs)), echo=True)
+
+        # Call get_physical_node to cache the hardware node listing before starting jobs
+        self.get_physical_node(0)
+
+    def expand_nodelist(self, nodelist_field):
+        """
+        Expand a Flux nodelist string like 'rzadams[1002,1005-1007]' into a list of node names.
+        Handles multiple comma-separated patterns.
+        """
+        nodes = []
+        # Regex to find patterns like prefix[range] or prefixNNNN
+        pattern = re.compile(r'([a-zA-Z0-9_-]+)(?:\[(.*?)\])?')
+        for match in pattern.finditer(nodelist_field):
+            prefix = match.group(1)
+            bracket = match.group(2)
+            if bracket:
+                for part in bracket.split(','):
+                    part = part.strip()
+                    if '-' in part:
+                        start, end = map(int, part.split('-'))
+                        nodes.extend([f"{prefix}{i}" for i in range(start, end + 1)])
+                    else:
+                        nodes.append(f"{prefix}{part}")
+            else:
+                nodes.append(prefix)
+        return nodes
+
+    def get_physical_node(self, rel_index):
+        """
+        Given a relative node number, return the actual physical node within the flux allocation.
+        Works for any node prefix (e.g., rzadams, elcap, tuo, syz).
+        """
+        if FluxScheduled._cached_nodes is None:
+            out = subprocess.check_output("flux resource list", shell=True).decode()
+            nodelist_field = None
+            for line in out.splitlines():
+                if line.strip().startswith("free"):
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        nodelist_field = parts[-1]
+                        break
+            if nodelist_field is None:
+                raise RuntimeError("Could not find NODELIST field in flux resource list output.")
+            FluxScheduled._cached_nodes = self.expand_nodelist(nodelist_field)
+            log(("Info: Physical Hardware Nodes: %s" % FluxScheduled._cached_nodes), echo=True)
+
+        nodes = FluxScheduled._cached_nodes
+        if rel_index < 0 or rel_index >= len(nodes):
+            raise IndexError(f"Relative index {rel_index} out of range (0-{len(nodes)-1})")
+        return nodes[rel_index]
+
 
     def kill(self, test):
         """
@@ -288,7 +340,9 @@ class FluxScheduled(lcMachines.LCMachineCore):
         if same_node is not None:
             if same_node not in self.node_list:
                 self.node_list.append(same_node)
-            ret.append(f"--requires=-rank:{self.node_list.index(same_node) % self.numNodes}")
+            rel_node = self.node_list.index(same_node) % self.numNodes
+            physical_node = self.get_physical_node(rel_node)
+            ret.append(f"--requires=host:{physical_node}")
 
         """
         Need to set -n{np} and -c{test.cpus_per_task}.  But we also need to account for accessing

@@ -25,7 +25,7 @@ flux run -N1 -n1 -c 96 ./a.out 5
 flux run -N 2 --tasks-per-node 2 ./a.out
 
     # ats tests
-/usr/apps/ats/7.0.121/bin/atsflux --flux test.ats
+/usr/apps/ats/7.0.122/bin/atsflux --flux test.ats
 
 --------------------------------------------------------------------------------
 Test a GPU code built with cuda/nvcc
@@ -52,10 +52,10 @@ lrun --mpibind=off -N2 -n16 ./a.out <- same as above
     # the cpu and gpu affinity in the tes case, so look at them by hand for reasonableness
     # lrun will 'pack' the jobs.  jsrun will use a resource list
 
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off 
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --lrun -verbose
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --lrun --lrun_pack -verbose
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --jsrun_exclusive  -verbose
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off 
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --lrun -verbose
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --lrun --lrun_pack -verbose
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --jsrun_exclusive  -verbose
 
 
 --------------------------------------------------------------------------------
