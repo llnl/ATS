@@ -9,10 +9,10 @@ Blueos (rzansel)  Uses LSF
 
 mpixlc-gpu -fopenmp -DHAVE_OPENMP -DHAVE_OPENMP_4 hello_gpu.cc
 
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --lrun -verbose -verbose
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --lrun --lrun_pack -verbose
-/usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --jsrun_exclusive  -verbose
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --lrun -verbose -verbose
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --lrun --lrun_pack -verbose
+/usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --jsrun_exclusive  -verbose
 
 
 --------------------------------------------------------------------------------
@@ -35,12 +35,12 @@ Sample Runs of the code stand alone
     srun -n 4 ./a.out
 
 Sample ATS runs of the code
-    /usr/apps/ats/7.0.121/bin/atslite1 --smpi_off
-    /usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --lrun
-    /usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --lrun --lrun_pack
-    /usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --jsrun
-    /usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --jsrun --jsrun_exclusive
-    /usr/apps/ats/7.0.121/bin/atslite1 --smpi_off --jsrun --jsrun_exclusive --jsrun_np 4 --jsrun_ngpu 4
+    /usr/apps/ats/7.0.122/bin/atslite1 --smpi_off
+    /usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --lrun
+    /usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --lrun --lrun_pack
+    /usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --jsrun
+    /usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --jsrun --jsrun_exclusive
+    /usr/apps/ats/7.0.122/bin/atslite1 --smpi_off --jsrun --jsrun_exclusive --jsrun_np 4 --jsrun_ngpu 4
     
 Clean 
     rm -rf a.out blueos_3* 

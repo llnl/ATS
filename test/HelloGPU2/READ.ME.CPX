@@ -7,9 +7,9 @@ export ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20
 make clean
 make hip
 
-/usr/apps/ats/7.0.120/bin/atsflux --flux test.ats
+/usr/apps/ats/7.0.122/bin/atsflux --flux test.ats
 
-/usr/apps/ats/7.0.120/bin/atsflux --CPX --cpx  --flux test.ats \
+/usr/apps/ats/7.0.122/bin/atsflux --CPX --cpx  --flux test.ats \
 --test_np_max=4 --gpus_per_task=1 --num_concurrent_jobs=48
 
 
