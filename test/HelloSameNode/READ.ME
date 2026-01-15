@@ -9,11 +9,7 @@ How to use:
     export PATH=/usr/gapps/ats/${SYS_TYPE}/7.0.${USER}/bin:$PATH
 
 --------------------------------------------------------------------------------
-Toss 4 CTS : flux under salloc
-Toss 4 EAS : flux native scheduler
-
-atsflux can be used for either, the difference is how the job starts, but
-both can use flux with same 'atsflux' command.
+- FLUX
 --------------------------------------------------------------------------------
     export -n MPICH_GPU_SUPPORT_ENABLED
     ./create_test_ats.py        <- create the ats test file
@@ -26,6 +22,11 @@ FAILED:  0
 PASSED:   32
 
 
+--------------------------------------------------------------------------------
+- SLURM
+--------------------------------------------------------------------------------
+    ./create_test_ats.py        <- create the ats test file
+    atslite1 test.ats      <- test using slurm
 
 --------------------------------------------------------------------------------
 --                           end of READ.ME                                   --
