@@ -719,12 +719,20 @@ class AtsTest (object):
             try:
                 os.unlink(self.outname)
             except:
-                log('Not able to delete %s' % self.outname, echo=True, logging=True)
+                time.sleep(1)
+                try:
+                    os.unlink(self.outname)
+                except:
+                    log('Not able to delete %s' % self.outname, echo=True, logging=True)
 
         if not self.combineOutput:
             if os.path.exists(self.errname):
                 try:
                     os.unlink(self.errname)
                 except:
-                    log('Not able to delete %s' % self.errname, echo=True, logging=True)
+                    time.sleep(1)
+                    try:
+                        os.unlink(self.errname)
+                    except:
+                        log('Not able to delete %s' % self.errname, echo=True, logging=True)
         pass
