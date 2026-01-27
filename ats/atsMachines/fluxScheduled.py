@@ -104,8 +104,16 @@ class FluxScheduled(lcMachines.LCMachineCore):
             log(("DEBUG: FluxScheduled init : self.numNodesAvailable     =%i" % (self.numNodesAvailable)), echo=True)
             log(("DEBUG: FluxScheduled init : self.numGPUsAvailable      =%i" % (self.numGPUs)), echo=True)
 
-        # Call get_physical_node to cache the hardware node listing before starting jobs
-        self.get_physical_node(0)
+        # Call get_physical_node to cache the hardware node listing before starting jobs.
+        # This is required for the same_node functionality.
+        try:
+            self.get_physical_node(0)
+        except RuntimeError:
+            # If you are not in an allocation, an exception will be thrown.
+            # We ignore the exception here and allow _cached_nodes to be None.
+            # If you are not using same_node, this is fine.  If you are using same_node,
+            # it should throw an exception when setting up the command list.
+            pass
 
     def expand_nodelist(self, nodelist_field):
         """
@@ -145,7 +153,7 @@ class FluxScheduled(lcMachines.LCMachineCore):
                         nodelist_field = parts[-1]
                         break
             if nodelist_field is None:
-                raise RuntimeError("Could not find NODELIST field in flux resource list output.")
+                raise RuntimeError("Could not find NODELIST field in flux resource list output. Use of ATS same_node feature requires running ATS within an allocation.")
             FluxScheduled._cached_nodes = self.expand_nodelist(nodelist_field)
             log(("Info: Physical Hardware Nodes: %s" % FluxScheduled._cached_nodes), echo=True)
 
