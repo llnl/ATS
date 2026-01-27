@@ -120,7 +120,7 @@ class SlurmProcessorScheduled(lcMachines.LCMachineCore):
             nodelist_str = os.environ.get("SLURM_JOB_NODELIST")
             if not nodelist_str:
                 raise RuntimeError(
-                    "SLURM_JOB_NODELIST is not set. Are you running inside a Slurm allocation/job?"
+                    "SLURM_JOB_NODELIST is not set. Use of ATS same_node feature requires running ATS within an allocation."
                 )
 
             # Option 1: if your expand_nodelist already handles Slurm-style nodelists,

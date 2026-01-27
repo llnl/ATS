@@ -153,7 +153,7 @@ class FluxScheduled(lcMachines.LCMachineCore):
                         nodelist_field = parts[-1]
                         break
             if nodelist_field is None:
-                raise RuntimeError("Could not find NODELIST field in flux resource list output.")
+                raise RuntimeError("Could not find NODELIST field in flux resource list output. Use of ATS same_node feature requires running ATS within an allocation.")
             FluxScheduled._cached_nodes = self.expand_nodelist(nodelist_field)
             log(("Info: Physical Hardware Nodes: %s" % FluxScheduled._cached_nodes), echo=True)
 
