@@ -104,8 +104,16 @@ class FluxScheduled(lcMachines.LCMachineCore):
             log(("DEBUG: FluxScheduled init : self.numNodesAvailable     =%i" % (self.numNodesAvailable)), echo=True)
             log(("DEBUG: FluxScheduled init : self.numGPUsAvailable      =%i" % (self.numGPUs)), echo=True)
 
-        # Call get_physical_node to cache the hardware node listing before starting jobs
-        self.get_physical_node(0)
+        # Call get_physical_node to cache the hardware node listing before starting jobs.
+        # This is required for the same_node functionality.
+        try:
+            self.get_physical_node(0)
+        except RuntimeError:
+            # If you are not in an allocation, an exception will be thrown.
+            # We ignore the exception here and allow _cached_nodes to be None.
+            # If you are not using same_node, this is fine.  If you are using same_node,
+            # it should throw an exception when setting up the command list.
+            pass
 
     def expand_nodelist(self, nodelist_field):
         """
