@@ -144,6 +144,20 @@ class FluxScheduled(lcMachines.LCMachineCore):
         Works for any node prefix (e.g., rzadams, elcap, tuo, syz).
         """
         if FluxScheduled._cached_nodes is None:
+            # Query instance-level -> >0 = in allocation
+            inst_lvl = 0
+            inst_lvl_out = subprocess.run(['flux', 'getattr', 'instance-level'], capture_output=True)
+            if inst_lvl_out.returncode == 0:
+                try:
+                    inst_lvl = int(inst_lvl_out.stdout.strip())
+                except ValueError:
+                    pass
+
+            if inst_lvl == 0:
+                raise RuntimeError(
+                    "flux instance-level is 0 or not set. Use of ATS same_node feature requires running ATS within an allocation."
+                )
+
             out = subprocess.check_output("flux resource list", shell=True).decode()
             nodelist_field = None
             for line in out.splitlines():
