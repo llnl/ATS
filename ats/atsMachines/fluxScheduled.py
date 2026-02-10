@@ -169,7 +169,6 @@ class FluxScheduled(lcMachines.LCMachineCore):
             if nodelist_field is None:
                 raise RuntimeError("Could not find NODELIST field in flux resource list output. Use of ATS same_node feature requires running ATS within an allocation.")
             FluxScheduled._cached_nodes = self.expand_nodelist(nodelist_field)
-            log(("Info: Physical Hardware Nodes: %s" % FluxScheduled._cached_nodes), echo=True)
 
         nodes = FluxScheduled._cached_nodes
         if rel_index < 0 or rel_index >= len(nodes):
@@ -238,6 +237,10 @@ class FluxScheduled(lcMachines.LCMachineCore):
 
         if self.use_flux_rm:
             log("Info: Will use flux resource manager to verify free resources", echo=True)
+
+        if options.verbose:
+            if FluxScheduled._cached_nodes:
+                log(f"Info: Physical Hardware Nodes: {FluxScheduled._cached_nodes}", echo=True)
 
         if self.cpx or self.within_cpx_allocation():
             log("NOTICE: Running in CPX mode", echo=True)
@@ -364,6 +367,8 @@ class FluxScheduled(lcMachines.LCMachineCore):
                 self.node_list.append(same_node)
             rel_node = self.node_list.index(same_node) % self.numNodes
             physical_node = self.get_physical_node(rel_node)
+            if configuration.options.verbose:
+                log(f"{test.name}:{physical_node}", echo=True)
             ret.append(f"--requires=host:{physical_node}")
 
         """
@@ -395,7 +400,7 @@ class FluxScheduled(lcMachines.LCMachineCore):
 
         if same_node:   # Need to limit -N if we want to run on the same node
             if test.num_nodes > 0:   # Check that -N was set by user before giving warning
-                log("ATS WARNING: Limiting nodes to 1 be able to run on same node.", echo=True)
+                log(f"ATS WARNING: {test.name} : Limiting nodes to 1 be able to run on same node.", echo=True)
             ret.append("-N1")
             ret.append("--exclusive")
         elif test.num_nodes > 0:
@@ -407,7 +412,7 @@ class FluxScheduled(lcMachines.LCMachineCore):
                 ret.append("--exclusive")
 
         if test.np > self.coresPerNode and same_node:   # Need to limit cores to be the max on the node if we want to run on the same node
-            log(f"ATS WARNING: Limiting cores, because of same_node option, to match max: {self.coresPerNode}", echo=True)
+            log(f"ATS WARNING: {test.name} : Limiting cores, because of same_node option, to match max: {self.coresPerNode}", echo=True)
             ret.append(f"-n{self.coresPerNode}")
         else:
             ret.append(f"-n{test.np}")
