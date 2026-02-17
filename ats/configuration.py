@@ -525,12 +525,13 @@ def get_machine_entry_points(machine_class):
     log("Machine Factory: looping over available machine plugins:",
         echo=False)
     if sys.version_info >= (3, 12):
-        ats_machines = entry_points().select(group='ats.machines', value=machine_class)
+        ats_machines = entry_points().select(group='ats.machines')
         log(f"Machine Factory: found machine plugins: {ats_machines}",
             echo=False)
         for machine_factory in ats_machines:
-            log(f"Machine Factory: Found machine {machine_factory.name} of class {machine_factory.value}: {machine_factory}")
-            return machine_factory.load()(machine_class, -1)
+            if machine_class in machine_factory.value:
+                log(f"Machine Factory: Found machine {machine_factory.name} of class {machine_factory.value}: {machine_factory}")
+                return machine_factory.load()(machine_class, -1)
     else:
         ats_machines = {machine.name: machine
                         for group, machines in entry_points().items()

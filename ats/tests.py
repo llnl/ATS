@@ -90,7 +90,7 @@ class AtsTest (object):
            Set namebase to a version without special chars or blanks.
         """
         self.name = name
-        self.namebase = re.sub('\W', '_', name)
+        self.namebase = re.sub(r'\W', '_', name)
         #print "DEBUG setName = %s\n" % self.name
 
     def __init__ (self, *fixedargs, **options):
