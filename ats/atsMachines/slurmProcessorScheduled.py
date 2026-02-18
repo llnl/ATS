@@ -133,10 +133,6 @@ class SlurmProcessorScheduled(lcMachines.LCMachineCore):
             # ).decode().splitlines()
             # self._cached_nodes = out
 
-            # Optional logging
-            log(("Info: Physical Hardware Nodes: %s" % self._cached_nodes), echo=True)
-            # log(f"Info: Physical Hardware Nodes: {self._cached_nodes}", echo=True)
-
         nodes = self._cached_nodes
         if rel_index < 0 or rel_index >= len(nodes):
             raise IndexError(f"Relative index {rel_index} out of range (0-{len(nodes)-1})")
@@ -236,6 +232,10 @@ ATS NOTICE: Slurm sees ATS or Shell as itself using a CPU.
             print("%s options.allInteractive      = %s " % (DEBUG_SLURM, options.allInteractive))
             print("%s options.filter              = %s " % (DEBUG_SLURM, options.filter))
             print("%s options.glue                = %s " % (DEBUG_SLURM, options.glue))
+
+        if options.verbose:
+            if self._cached_nodes:
+                log(f"Info: Physical Hardware Nodes: {self._cached_nodes}", echo=True)
 
         if options.npMax > 0:
             self.npMax = options.npMax
@@ -395,6 +395,8 @@ ATS NOTICE: Slurm sees ATS or Shell as itself using a CPU.
                 self.node_list.append(same_node)
             rel_node = self.node_list.index(same_node) % self.numNodes
             physical_node = self.get_physical_node(rel_node)
+            if configuration.options.verbose:
+                log(f"{test.name}:{physical_node}", echo=True)
             srun_nodelist = '--nodelist=%s' % physical_node
             distribution="no_distribution"
 
