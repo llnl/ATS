@@ -15,7 +15,7 @@ jobs:
     strategy:
       matrix:
         ats-tool: [ats, ats3, atsflux, atsformat, atslite1, atslite3]
-        python-version: ["3.8", "3.9", "3.10"]
+        python-version: ["3.8", "3.9", "3.10", "3.13"]
 
     steps:
       - uses: actions/checkout@v3
