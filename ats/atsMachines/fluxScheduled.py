@@ -400,7 +400,7 @@ class FluxScheduled(lcMachines.LCMachineCore):
 
         if same_node:   # Need to limit -N if we want to run on the same node
             if test.num_nodes > 0:   # Check that -N was set by user before giving warning
-                log(f"ATS WARNING: {test.name} : Limiting nodes to 1 be able to run on same node.", echo=True)
+                log(f"ATS WARNING: {test.name} : Limiting nodes to 1 to be able to run on same node.", echo=True)
             ret.append("-N1")
             ret.append("--exclusive")
         elif test.num_nodes > 0:
