@@ -18,7 +18,8 @@ version = "7.0.122"
 
 [tool.poetry.dependencies]
 python = ">=3.8"
-numpy = "^1.18"
+numpy = [ {version = "^1.18", python = "<3.13"},
+          {version = ">=2.0", python = ">=3.13"} ]
 
 [tool.poetry.dev-dependencies]
 black = ">=22.6"
