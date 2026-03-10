@@ -56,7 +56,7 @@ class SlurmProcessorScheduled(lcMachines.LCMachineCore):
         tarray=tstr.split() 
         SlurmProcessorScheduled.slurm_version_str=tarray[1]
         log('SLURM VERSION STRING', SlurmProcessorScheduled.slurm_version_str)
-        tarray=re.split('[\.\-]',SlurmProcessorScheduled.slurm_version_str)
+        tarray=re.split(r'[\.\-]',SlurmProcessorScheduled.slurm_version_str)
         SlurmProcessorScheduled.slurm_version_int=(int(tarray[0]) * 1000) + (int(tarray[1]) * 100) + (int(tarray[2]))
         log('SLURM VERSION NUMBER', SlurmProcessorScheduled.slurm_version_int)
 
