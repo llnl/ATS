@@ -102,7 +102,7 @@ def atsrToJUnit(atsrFile=None,junitOut=None,build=True ):
 def cleanTestCaseName( test ):
     '''Remove all special chars from the name so it's readable to junit parser.  '''
     import re
-    pattern = re.compile('([^\s\w]|_)+')
+    pattern = re.compile(r'([^\s\w]|_)+')
     testname = pattern.sub('', test.name)
     return testname
 

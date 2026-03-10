@@ -167,7 +167,7 @@ def getBaseHostName(hostname):
     "get base host name without digits"
     host = realHostName(hostname)
     # get non-digit part of node name
-    wordpat = re.compile('(^[a-zA-Z_]*)(\d*)').search
+    wordpat = re.compile(r'(^[a-zA-Z_]*)(\d*)').search
     basehost = wordpat(host).group(1)
     return basehost
 
