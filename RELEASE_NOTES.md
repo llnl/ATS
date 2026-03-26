@@ -1,4 +1,81 @@
 # ATS Release Notes
+    ---------------------------------------------------------------------------
+##  7.0.124
+    ---------------------------------------------------------------------------
+Date:   Tue Mar 10 15:47:03 2026 -0700
+    Fix deprecation warning (#178)
+
+    * Fix deprecation warning
+    * More backslashes
+
+Date:   Wed Feb 25 11:23:58 2026 -0800
+
+    Use newer numpy for python 3.13+ (#177)
+
+Date:   Tue Feb 17 16:28:45 2026 -0800
+
+    Reduce output for same_node setup (#175)
+
+    * Only query nodes when inside an allocation
+    * Only print node info with --verbose
+    * Fix warning
+
+Date:   Tue Feb 17 16:12:45 2026 -0800
+
+    Fix machine entry_points logic for python 3.12+ to match 3.11.  Also … (#176)
+
+    * Fix machine entry_points logic for python 3.12+ to match 3.11.  Also fix warning for escaping.
+    * Testing with 3.13
+
+Date:   Tue Jan 27 08:44:45 2026 -0800
+
+    Prevent failure when running without same_node on the login node; sam… (#174)
+
+    * Prevent failure when running without same_node on the login node; same_node should raise an exception later if running on the login node
+    * Update error message
+
+Date:   Thu Jan 22 07:48:02 2026 -0800
+
+    Add sleep and retry before logging failed unlink (#171)
+
+Date:   Thu Jan 15 13:37:24 2026 -0800
+
+    same_node processing for slurm. (#172)
+
+    However, slurm does not honor this option
+    in all cases.  test23 and test24 in
+    the HelloSameNode tickel this bug.
+
+    I have tried various slurm options to get
+    slurm to comply, but there are scenarios
+    where it will ignore the requested node
+    and just run it wherever slurm thinks
+    there are free nodes.
+
+    Thus, at this time same_node processing
+    under slurm is not reliable.
+
+Date:   Fri Jan 9 15:56:59 2026 -0800
+
+    Fix for sameNode functionality of ATS with flux. (#170)
+
+    Call get_physical_nodes during init.
+
+    Need to call this immediately to cache
+    the hardware nodes before any jobs
+    start running. The logic inspects
+    the 'free' nodes reported by flux, which
+    will change during the run, so inspect
+    it immediately, before starting jobs
+    then save the list of hardware nodes.
+
+Date:   Wed Dec 3 12:21:42 2025 -0800
+
+    Adjust entry_points methods if python is 3.12 or higher (#169)
+
+Date:   Fri Jul 18 15:25:08 2025 -0700
+
+    Allow extra slurm arguments to be passed, allow empty partition (#168)
 
     ---------------------------------------------------------------------------
 ##  7.0.120
