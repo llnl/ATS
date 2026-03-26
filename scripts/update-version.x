@@ -1,4 +1,4 @@
-/usr/gapps/ats/scripts/replace 7.0.121 7.0.122 \
+/usr/gapps/ats/scripts/replace 7.0.122 7.0.124 \
 pyproject.toml \
 test/*/READ.ME
 
