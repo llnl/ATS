@@ -632,6 +632,8 @@ class FluxScheduled(lcMachines.LCMachineCore):
             # Handle the case where the command fails
             print(f"INFO: rocm-smi failed with error: {e}")
             found_cpx = False
+        except FileNotFoundError:
+            found_cpx = False
 
         return found_cpx
 
