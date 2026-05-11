@@ -57,9 +57,6 @@ class ReadyWorkSet:
     def reset(self):
         """Clear all ready buckets and membership tracking.
 
-        Args:
-            None.
-
         Returns:
             None.
         """
@@ -226,9 +223,6 @@ class ReadyWorkSet:
     def has_candidates(self):
         """Return whether any ready bucket still contains heap entries.
 
-        Args:
-            None.
-
         Returns:
             bool: ``True`` if any bucket contains queued heap entries.  This is
             a cheap structural check; entries may still be stale.
@@ -255,9 +249,6 @@ class ReadyWorkSet:
 
     def live_ready_count(self):
         """Return the cached ready-set size.
-
-        Args:
-            None.
 
         Returns:
             int: Number of serial ids currently tracked as queued.  This is
@@ -290,9 +281,6 @@ class ReadyWorkSet:
 
     def buckets(self):
         """Return a snapshot of bucket keys currently known to the work set.
-
-        Args:
-            None.
 
         Returns:
             list: Resource bucket integers.  Empty buckets may be present if
