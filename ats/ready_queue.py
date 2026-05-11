@@ -155,13 +155,3 @@ class ReadyWorkSet:
             for item in items:
                 heapq.heappush(self._ready_heaps[bucket], item)
                 self._ready_serials.add(item[-1])
-
-
-class NoPromotionPolicy:
-    """Promotion policy that leaves all candidates in normal ready buckets."""
-
-    def pop_promoted(self, ready_work_set, available_slots, ready_predicate, can_run, blocked_predicate=None):
-        return None, False
-
-    def snapshot_counts(self, ready_work_set, ready_predicate):
-        return 0, {}
