@@ -148,7 +148,7 @@ class _Machine:
         return True
 
 
-def _make_test(serial, np=1, block=None, wait_until=None):
+def _make_test(serial, np=1, block=None, wait_until=None, priority=None):
     return types.SimpleNamespace(
         serialNumber=serial,
         status=CREATED,
@@ -157,6 +157,7 @@ def _make_test(serial, np=1, block=None, wait_until=None):
         block=block,
         independent=False,
         np=np,
+        priority=priority if priority is not None else np,
     )
 
 
@@ -190,7 +191,7 @@ class ReadySchedulerExampleTest(unittest.TestCase):
         self.assertEqual(machine.launched, [1, 2])
         self.assertIs(child.status, RUNNING)
 
-    def test_prefers_largest_fitting_bucket_and_restores_blocked_candidate(self):
+    def test_prefers_default_processor_count_priority_and_restores_blocked_candidate(self):
         small = _make_test(1, np=1, block="small")
         large = _make_test(2, np=4, block="large")
         small.group = _Group(1, [small])
@@ -213,6 +214,34 @@ class ReadySchedulerExampleTest(unittest.TestCase):
 
         self.assertEqual(machine.launched, [1, 2])
         self.assertIs(large.status, RUNNING)
+
+    def test_can_prioritize_independently_from_processor_count(self):
+        low_priority_large = _make_test(1, np=4, priority=10)
+        high_priority_small = _make_test(2, np=1, priority=20)
+        tests_by_serial = {
+            low_priority_large.serialNumber: low_priority_large,
+            high_priority_small.serialNumber: high_priority_small,
+        }
+        order = {
+            low_priority_large.serialNumber: 0,
+            high_priority_small.serialNumber: 1,
+        }
+        ready = ReadyWorkSet(
+            item_lookup=tests_by_serial.get,
+            order_lookup=lambda test: order[test.serialNumber],
+            priority_lookup=lambda test: test.priority,
+        )
+        ready.enqueue_if_ready(low_priority_large, lambda test: test.status is CREATED)
+        ready.enqueue_if_ready(high_priority_small, lambda test: test.status is CREATED)
+
+        selected, blocked = ready.pop_next(
+            available_slots=4,
+            ready_predicate=lambda test: test.status is CREATED,
+            can_run=lambda _test: True,
+        )
+
+        self.assertIs(selected, high_priority_small)
+        self.assertFalse(blocked)
 
 
 if __name__ == "__main__":

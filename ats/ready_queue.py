@@ -2,16 +2,16 @@
 
 ``ReadyWorkSet`` tracks work that is structurally ready but still needs a
 machine-specific capacity check before launch.  It keeps FIFO scheduler order
-within resource buckets, prefers the largest bucket that fits the current
-capacity, and restores deferred candidates when a machine policy cannot run
-them yet.
+within integer-priority buckets, prefers the highest runnable priority, and
+restores deferred candidates when a machine policy cannot run them yet.
 
 Items are usually ``ats.tests.AtsTest`` instances, but the class only requires
 test-like objects with stable serial identifiers.  By default, an item must
 have:
 
 * ``serialNumber``: integer-like unique id for this scheduler;
-* ``np``: optional integer-like processor count used as the resource bucket.
+* ``np``: optional integer-like processor count used as the default priority
+  and capacity requirement.
 
 Schedulers supply callbacks for lookup, ordering, readiness, and machine
 admission.  ``ReadyWorkSet`` deliberately does not know what CREATED, waits,
@@ -22,7 +22,7 @@ import heapq
 
 
 class ReadyWorkSet:
-    """Maintain resource-binned heaps of structurally ready scheduler work.
+    """Maintain priority-binned heaps of structurally ready scheduler work.
 
     The work set stores heap entries as ``(order, serial)`` tuples rather than
     storing item objects directly.  This keeps heap ordering stable and lets a
@@ -30,7 +30,15 @@ class ReadyWorkSet:
     candidate is considered.
     """
 
-    def __init__(self, item_lookup, order_lookup, resource_bucket=None, serial_lookup=None):
+    def __init__(
+        self,
+        item_lookup,
+        order_lookup,
+        priority_lookup=None,
+        serial_lookup=None,
+        resource_bucket=None,
+        capacity_lookup=None,
+    ):
         """Create an empty ready work set.
 
         Args:
@@ -39,19 +47,29 @@ class ReadyWorkSet:
                 serial id from a heap entry back to the live scheduler item.
             order_lookup (callable): Function with signature
                 ``order_lookup(item: object) -> int``.  Lower values run first
-                inside one resource bucket.
-            resource_bucket (callable, optional): Function with signature
-                ``resource_bucket(item: object) -> int``.  It maps an item to a
-                positive resource bucket.  The default uses ``item.np`` or
-                ``1`` when ``np`` is missing.
+                inside one priority bucket.
+            priority_lookup (callable, optional): Function with signature
+                ``priority_lookup(item: object) -> int``.  Higher values are
+                considered first.  The default uses ``item.np`` or ``1`` when
+                ``np`` is missing.
             serial_lookup (callable, optional): Function with signature
                 ``serial_lookup(item: object) -> int``.  It returns the stable
                 unique id for an item.  The default uses ``item.serialNumber``.
+            resource_bucket (callable, optional): Backward-compatible alias for
+                ``priority_lookup``.
+            capacity_lookup (callable, optional): Function with signature
+                ``capacity_lookup(item: object) -> int``.  It maps an item to
+                the capacity units compared with ``available_slots`` in
+                ``pop_next``.  The default uses ``item.np`` or ``1`` when
+                ``np`` is missing.
         """
         self._item_lookup = item_lookup
         self._order_lookup = order_lookup
-        self._resource_bucket = resource_bucket or self.default_resource_bucket
+        if priority_lookup is None and resource_bucket is not None:
+            priority_lookup = resource_bucket
+        self._priority_lookup = priority_lookup or self.default_priority
         self._serial_lookup = serial_lookup or self.default_serial
+        self._capacity_lookup = capacity_lookup or self.default_capacity
         self.reset()
 
     def reset(self):
@@ -64,8 +82,23 @@ class ReadyWorkSet:
         self._ready_serials = set()
 
     @staticmethod
-    def default_resource_bucket(item):
-        """Map an ATS test-like item to its processor-count bucket.
+    def default_priority(item):
+        """Map an ATS test-like item to its default integer priority.
+
+        Args:
+            item (object): Test-like object.  If present, ``item.np`` must be
+                integer-like.
+
+        Returns:
+            int: ``max(1, int(item.np))``, or ``1`` if ``item`` has no ``np``.
+        """
+        return max(1, int(getattr(item, "np", 1)))
+
+    default_resource_bucket = default_priority
+
+    @staticmethod
+    def default_capacity(item):
+        """Map an ATS test-like item to its default capacity requirement.
 
         Args:
             item (object): Test-like object.  If present, ``item.np`` must be
@@ -89,20 +122,36 @@ class ReadyWorkSet:
         """
         return item.serialNumber
 
-    def bucket_for(self, item):
-        """Map ``item`` to a positive integer resource bucket.
+    def priority_for(self, item):
+        """Map ``item`` to an integer priority.
 
         Args:
             item (object): Scheduler item accepted by this work set's
-                ``resource_bucket`` callback.
+                ``priority_lookup`` callback.
 
         Returns:
-            int: Positive resource bucket for ``item``.
+            int: Priority for ``item``.  Higher values are considered first.
         """
-        return max(1, int(self._resource_bucket(item)))
+        return int(self._priority_lookup(item))
+
+    def bucket_for(self, item):
+        """Backward-compatible alias for :meth:`priority_for`."""
+        return self.priority_for(item)
+
+    def capacity_for(self, item):
+        """Map ``item`` to a capacity requirement.
+
+        Args:
+            item (object): Scheduler item accepted by this work set's
+                ``capacity_lookup`` callback.
+
+        Returns:
+            int: Non-negative capacity requirement for ``item``.
+        """
+        return max(0, int(self._capacity_lookup(item)))
 
     def order_of(self, item):
-        """Return the stable scheduler order used inside ready buckets.
+        """Return the stable scheduler order used inside ready priorities.
 
         Args:
             item (object): Scheduler item accepted by this work set's
@@ -110,7 +159,7 @@ class ReadyWorkSet:
 
         Returns:
             int: Stable order key.  Lower values are selected first inside the
-            same resource bucket.
+            same priority.
         """
         return self._order_lookup(item)
 
@@ -134,16 +183,17 @@ class ReadyWorkSet:
         serial = self._serial_lookup(item)
         if serial in self._ready_serials:
             return False
-        heapq.heappush(self._ready_heaps[self.bucket_for(item)], self._heap_key(item))
+        heapq.heappush(self._ready_heaps[self.priority_for(item)], self._heap_key(item))
         self._ready_serials.add(serial)
         return True
 
     def pop_next(self, available_slots, ready_predicate, can_run, blocked_predicate=None):
-        """Pop the largest fitting runnable item while restoring deferred candidates.
+        """Pop the highest-priority runnable item while restoring deferred candidates.
 
         Args:
-            available_slots (int): Current machine capacity.  Buckets larger
-                than this value are skipped.
+            available_slots (int): Current machine capacity.  Candidates whose
+                ``capacity_lookup`` value exceeds this are left queued; priority
+                itself does not need to represent capacity.
             ready_predicate (callable): Function with signature
                 ``ready_predicate(item: object) -> bool``.  It is rechecked for
                 each candidate so stale heap entries can be discarded.
@@ -162,37 +212,38 @@ class ReadyWorkSet:
             ready candidate was retained by ``blocked_predicate``.
 
         Notes:
-            Candidates that still satisfy ``ready_predicate`` but fail
-            ``can_run`` are restored to their original buckets before return.
-            Candidates that no longer satisfy ``ready_predicate`` are discarded
-            as stale entries.
+            Candidates that still satisfy ``ready_predicate`` but fail capacity
+            or ``can_run`` are restored to their original priorities before
+            return.  Candidates that no longer satisfy ``ready_predicate`` are
+            discarded as stale entries.
         """
         persistence_blocked = False
         deferred = defaultdict(list)
-        for bucket in sorted(self._ready_heaps.keys(), reverse=True):
-            if bucket > available_slots:
-                continue
-            heap = self._ready_heaps[bucket]
+        for priority in sorted(self._ready_heaps.keys(), reverse=True):
+            heap = self._ready_heaps[priority]
             while heap:
                 order_index, serial = heapq.heappop(heap)
                 self._ready_serials.discard(serial)
                 candidate = self._item_lookup(serial)
                 if candidate is None or not ready_predicate(candidate):
                     continue
+                if available_slots is not None and self.capacity_for(candidate) > available_slots:
+                    deferred[priority].append((order_index, serial))
+                    continue
                 if blocked_predicate is not None and blocked_predicate(candidate):
                     persistence_blocked = True
-                    deferred[bucket].append((order_index, serial))
+                    deferred[priority].append((order_index, serial))
                     continue
                 if can_run(candidate):
                     self._restore_deferred(deferred)
                     return candidate, persistence_blocked
-                deferred[bucket].append((order_index, serial))
+                deferred[priority].append((order_index, serial))
 
         self._restore_deferred(deferred)
         return None, persistence_blocked
 
     def remove(self, item):
-        """Remove ``item`` from its ready bucket if it is still queued.
+        """Remove ``item`` from its ready priority if it is still queued.
 
         Args:
             item (object | None): Scheduler item to remove.  ``None`` is
@@ -205,8 +256,8 @@ class ReadyWorkSet:
         if item is None:
             return False
         serial = self._serial_lookup(item)
-        bucket = self.bucket_for(item)
-        heap = self._ready_heaps.get(bucket)
+        priority = self.priority_for(item)
+        heap = self._ready_heaps.get(priority)
         if not heap:
             self._ready_serials.discard(serial)
             return False
@@ -221,10 +272,10 @@ class ReadyWorkSet:
         return True
 
     def has_candidates(self):
-        """Return whether any ready bucket still contains heap entries.
+        """Return whether any ready priority still contains heap entries.
 
         Returns:
-            bool: ``True`` if any bucket contains queued heap entries.  This is
+            bool: ``True`` if any priority contains queued heap entries.  This is
             a cheap structural check; entries may still be stale.
         """
         return any(heap for heap in self._ready_heaps.values())
@@ -258,7 +309,7 @@ class ReadyWorkSet:
         return len(self._ready_serials)
 
     def bucket_counts(self, predicate=None):
-        """Return queued item counts by resource bucket.
+        """Return queued item counts by priority.
 
         Args:
             predicate (callable, optional): Function with signature
@@ -266,7 +317,7 @@ class ReadyWorkSet:
                 items accepted by this predicate are counted.
 
         Returns:
-            dict: Mapping ``bucket: int`` to ``count: int`` for queued live
+            dict: Mapping ``priority: int`` to ``count: int`` for queued live
             items.
         """
         counts = defaultdict(int)
@@ -276,23 +327,46 @@ class ReadyWorkSet:
                 continue
             if predicate is not None and not predicate(item):
                 continue
-            counts[self.bucket_for(item)] += 1
+            counts[self.priority_for(item)] += 1
         return dict(counts)
 
-    def buckets(self):
-        """Return a snapshot of bucket keys currently known to the work set.
+    def priority_counts(self, predicate=None):
+        """Return queued item counts by priority.
+
+        Args:
+            predicate (callable, optional): Function with signature
+                ``predicate(item: object) -> bool``.  If provided, only live
+                items accepted by this predicate are counted.
 
         Returns:
-            list: Resource bucket integers.  Empty buckets may be present if
+            dict: Mapping ``priority: int`` to ``count: int`` for queued live
+            items.
+        """
+        return self.bucket_counts(predicate)
+
+    def buckets(self):
+        """Return a snapshot of priority keys currently known to the work set.
+
+        Returns:
+            list: Priority integers.  Empty priorities may be present if
             they previously held work.
         """
         return list(self._ready_heaps.keys())
 
-    def candidates_for_bucket(self, bucket, ready_predicate, candidate_predicate=None, limit=None):
-        """Return queued candidates from one bucket without mutating the work set.
+    def priorities(self):
+        """Return a snapshot of priority keys currently known to the work set.
+
+        Returns:
+            list: Priority integers.  Empty priorities may be present if they
+            previously held work.
+        """
+        return self.buckets()
+
+    def candidates_for_priority(self, priority, ready_predicate, candidate_predicate=None, limit=None):
+        """Return queued candidates from one priority without mutating the work set.
 
         Args:
-            bucket (int): Resource bucket to inspect.
+            priority (int): Priority to inspect.
             ready_predicate (callable): Function with signature
                 ``ready_predicate(item: object) -> bool``.  Stale or no-longer
                 ready candidates are skipped in the returned list, but not
@@ -300,14 +374,14 @@ class ReadyWorkSet:
             candidate_predicate (callable, optional): Additional filter with
                 signature ``candidate_predicate(item: object) -> bool``.
             limit (int, optional): Maximum number of candidates to return.  If
-                ``None``, all matching candidates in the bucket are returned.
+                ``None``, all matching candidates in the priority are returned.
 
         Returns:
-            list: Live scheduler items from ``bucket`` in stable in-bucket
+            list: Live scheduler items from ``priority`` in stable in-priority
             order.
         """
         candidates = []
-        for _order_index, serial in sorted(self._ready_heaps.get(bucket, [])):
+        for _order_index, serial in sorted(self._ready_heaps.get(priority, [])):
             candidate = self._item_lookup(serial)
             if candidate is None or not ready_predicate(candidate):
                 continue
@@ -317,6 +391,10 @@ class ReadyWorkSet:
             if limit is not None and len(candidates) >= limit:
                 break
         return candidates
+
+    def candidates_for_bucket(self, bucket, ready_predicate, candidate_predicate=None, limit=None):
+        """Backward-compatible alias for :meth:`candidates_for_priority`."""
+        return self.candidates_for_priority(bucket, ready_predicate, candidate_predicate, limit)
 
     def _heap_key(self, item):
         """Build the stored heap key for ``item``.
@@ -334,13 +412,13 @@ class ReadyWorkSet:
         """Restore deferred heap entries after a pop attempt.
 
         Args:
-            deferred (dict): Mapping ``bucket: int`` to lists of heap-key
+            deferred (dict): Mapping ``priority: int`` to lists of heap-key
                 tuples ``(order: int, serial: int)``.
 
         Returns:
             None.
         """
-        for bucket, items in deferred.items():
+        for priority, items in deferred.items():
             for item in items:
-                heapq.heappush(self._ready_heaps[bucket], item)
+                heapq.heappush(self._ready_heaps[priority], item)
                 self._ready_serials.add(item[-1])
