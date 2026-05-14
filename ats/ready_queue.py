@@ -11,8 +11,6 @@ have:
 
 * ``serialNumber``: integer-like unique id for this scheduler;
 * ``priority``: optional integer-like scheduling priority;
-* ``np``: optional integer-like processor count used as the default capacity
-  requirement.
 
 Schedulers supply callbacks for lookup, ordering, readiness, and machine
 admission.  ``ReadyWorkSet`` deliberately does not know what CREATED, waits,
@@ -61,8 +59,7 @@ class ReadyWorkSet:
             capacity_lookup (callable, optional): Function with signature
                 ``capacity_lookup(item: object) -> int``.  It maps an item to
                 the capacity units compared with ``available_slots`` in
-                ``pop_next``.  The default uses ``item.np`` or ``1`` when
-                ``np`` is missing.
+                ``pop_next``.
         """
         self._item_lookup = item_lookup
         self._order_lookup = order_lookup
@@ -91,8 +88,7 @@ class ReadyWorkSet:
                 must be integer-like.
 
         Returns:
-            int: ``int(item.priority)``, or ``1`` if ``item`` has no
-            ``priority``.
+            int: ``int(item.priority)``, or ``1`` if ``item`` has no ``priority``.
         """
         return int(getattr(item, "priority", 1))
 
@@ -103,13 +99,13 @@ class ReadyWorkSet:
         """Map an ATS test-like item to its default capacity requirement.
 
         Args:
-            item (object): Test-like object.  If present, ``item.np`` must be
+            item (object): Test-like object.  If present, ``item.priority`` must be
                 integer-like.
 
         Returns:
-            int: ``max(1, int(item.np))``, or ``1`` if ``item`` has no ``np``.
+            int: ``max(1, int(item.priority))``, or ``1`` if ``item`` has no ``priority``.
         """
-        return max(1, int(getattr(item, "np", 1)))
+        return max(1, int(getattr(item, "prioirty", 1)))
 
     @staticmethod
     def default_serial(item):

@@ -703,16 +703,13 @@ to understand what influenced the scheduling:
 * Test attribute runOrder, an integer indicating the order of test launch.
 
 .. note::
-   Important: by default two tests will not be run in the same directory at the same time. 
-   
-This is a modestly conservative scheme to avoid common resource conflicts when testing 
-one file with different parameters.
+   Important: by default two non-independent tests will not be run in the same
+   directory at the same time.  See
+   :ref:`directory blocking <directory_blocking>` for the full rule.
 
-If you know a test does not have such a problem, you can give it the option 
-``independent = True``. Note that the ``group`` command makes the default value of
-``independent`` False for all members of the group, overriding anything except an actual
-option in the test statement.  Thus if you do not want this behavior for the group 
-you must use independent = True as an argument in your group command.
+This is a modestly conservative scheme to avoid common resource conflicts when
+testing one file with different parameters.  If you know a test does not have
+such a problem, you can give it the option ``independent = True``.
 
 The standard scheduler sorts the groups by the highest priority test in the group. In effect,
 every member of a group behaves as if it has the priority of the highest-priority test in the 
@@ -988,14 +985,26 @@ keep
 .. _directory_blocking:
 
 independent
-   If independent is True, the user is certifying that there is no obstacle to 
-   this test executing at the same time as any other test. Otherwise, by default
-   tests are assumed to conflict with others in the same directory, because 
-   they might write files there with the same names as those read or written by
-   other tests. If two tests conflict, they are never run at the same time. 
-   Judicious use of independent = True will increase ATS's throughput. 
-   We suggest that while a stick(independent=True) may be appropriate,
-   in some test files, to glue this definition may be reckless.
+   If ``independent`` is True, the user is certifying that there is no obstacle
+   to this test executing at the same time as any other test.  Otherwise, by
+   default tests are assumed to conflict with other non-independent tests in the
+   same directory, because they might write files there with the same names as
+   those read or written by other tests.
+
+   ATS implements this with a directory block.  A test's block is normally its
+   execution directory.  When a non-independent test starts, its group owns that
+   directory block.  Another non-independent test or group using the same block
+   cannot start until the owning group's non-independent members have finished.
+   Other members of the owning group may continue to run under that block.
+
+   The ``group`` command makes the default value of ``independent`` False for
+   all members of the group, overriding anything except an explicit option in
+   the test statement.  If you do not want this behavior for the group, pass
+   ``independent=True`` to ``group``.
+
+   Judicious use of ``independent=True`` will increase ATS's throughput.  Use
+   it only when tests in the same directory do not share output files, generated
+   inputs, cleanup patterns, or other directory-local state.
 
 priority 
     By default the priority of a test is np + the sum of the priorities of

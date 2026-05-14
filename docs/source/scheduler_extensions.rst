@@ -68,6 +68,20 @@ The class is intentionally policy-light.  The owner supplies:
 defines readiness as: created, dependencies complete, not directory-blocked,
 and still relevant to the current run.
 
+Directory Blocks
+================
+
+The user-facing directory-blocking model is documented in
+:ref:`directory blocking <directory_blocking>`.  Scheduler extensions only need
+to preserve the scheduler responsibilities that follow from that model.
+
+Schedulers that cache readiness need to handle block changes incrementally:
+
+* index tests by ``test.block`` when tests are loaded;
+* reject candidates whose block is currently owned by another group;
+* after a test ends, remove its group's block if the group is no longer active;
+* when a block clears, reconsider only tests indexed under that block.
+
 Beginning Tutorial: A Cached Ready Scheduler
 ============================================
 
