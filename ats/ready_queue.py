@@ -10,8 +10,9 @@ test-like objects with stable serial identifiers.  By default, an item must
 have:
 
 * ``serialNumber``: integer-like unique id for this scheduler;
-* ``np``: optional integer-like processor count used as the default priority
-  and capacity requirement.
+* ``priority``: optional integer-like scheduling priority;
+* ``np``: optional integer-like processor count used as the default capacity
+  requirement.
 
 Schedulers supply callbacks for lookup, ordering, readiness, and machine
 admission.  ``ReadyWorkSet`` deliberately does not know what CREATED, waits,
@@ -50,8 +51,8 @@ class ReadyWorkSet:
                 inside one priority bucket.
             priority_lookup (callable, optional): Function with signature
                 ``priority_lookup(item: object) -> int``.  Higher values are
-                considered first.  The default uses ``item.np`` or ``1`` when
-                ``np`` is missing.
+                considered first.  The default uses ``item.priority`` or ``1``
+                when ``priority`` is missing.
             serial_lookup (callable, optional): Function with signature
                 ``serial_lookup(item: object) -> int``.  It returns the stable
                 unique id for an item.  The default uses ``item.serialNumber``.
@@ -86,13 +87,14 @@ class ReadyWorkSet:
         """Map an ATS test-like item to its default integer priority.
 
         Args:
-            item (object): Test-like object.  If present, ``item.np`` must be
-                integer-like.
+            item (object): Test-like object.  If present, ``item.priority``
+                must be integer-like.
 
         Returns:
-            int: ``max(1, int(item.np))``, or ``1`` if ``item`` has no ``np``.
+            int: ``int(item.priority)``, or ``1`` if ``item`` has no
+            ``priority``.
         """
-        return max(1, int(getattr(item, "np", 1)))
+        return int(getattr(item, "priority", 1))
 
     default_resource_bucket = default_priority
 

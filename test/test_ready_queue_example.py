@@ -215,7 +215,7 @@ class ReadySchedulerExampleTest(unittest.TestCase):
         self.assertEqual(machine.launched, [1, 2])
         self.assertIs(large.status, RUNNING)
 
-    def test_can_prioritize_independently_from_processor_count(self):
+    def test_default_priority_uses_item_priority(self):
         low_priority_large = _make_test(1, np=4, priority=10)
         high_priority_small = _make_test(2, np=1, priority=20)
         tests_by_serial = {
@@ -229,7 +229,6 @@ class ReadySchedulerExampleTest(unittest.TestCase):
         ready = ReadyWorkSet(
             item_lookup=tests_by_serial.get,
             order_lookup=lambda test: order[test.serialNumber],
-            priority_lookup=lambda test: test.priority,
         )
         ready.enqueue_if_ready(low_priority_large, lambda test: test.status is CREATED)
         ready.enqueue_if_ready(high_priority_small, lambda test: test.status is CREATED)
