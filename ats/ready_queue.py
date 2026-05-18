@@ -1,9 +1,9 @@
 """Cached ready-queue helpers for ATS schedulers.
 
-``ReadyWorkSet`` tracks work that is structurally ready but still needs a
-machine-specific capacity check before launch.  It keeps FIFO scheduler order
-within integer-priority buckets, prefers the highest runnable priority, and
-restores deferred candidates when a machine policy cannot run them yet.
+``ReadyWorkSet`` tracks work that is structurally ready for scheduler
+consideration.  It keeps FIFO scheduler order within integer-priority buckets,
+prefers the highest runnable priority, and restores deferred candidates when a
+machine policy cannot run them yet.
 
 Items are usually ``ats.tests.AtsTest`` instances, but the class only requires
 test-like objects with stable serial identifiers.  By default, an item must
@@ -35,8 +35,6 @@ class ReadyWorkSet:
         order_lookup,
         priority_lookup=None,
         serial_lookup=None,
-        resource_bucket=None,
-        capacity_lookup=None,
     ):
         """Create an empty ready work set.
 
@@ -54,20 +52,11 @@ class ReadyWorkSet:
             serial_lookup (callable, optional): Function with signature
                 ``serial_lookup(item: object) -> int``.  It returns the stable
                 unique id for an item.  The default uses ``item.serialNumber``.
-            resource_bucket (callable, optional): Backward-compatible alias for
-                ``priority_lookup``.
-            capacity_lookup (callable, optional): Function with signature
-                ``capacity_lookup(item: object) -> int``.  It maps an item to
-                the capacity units compared with ``available_slots`` in
-                ``pop_next``.
         """
         self._item_lookup = item_lookup
         self._order_lookup = order_lookup
-        if priority_lookup is None and resource_bucket is not None:
-            priority_lookup = resource_bucket
         self._priority_lookup = priority_lookup or self.default_priority
         self._serial_lookup = serial_lookup or self.default_serial
-        self._capacity_lookup = capacity_lookup or self.default_capacity
         self.reset()
 
     def reset(self):
@@ -91,21 +80,6 @@ class ReadyWorkSet:
             int: ``int(item.priority)``, or ``1`` if ``item`` has no ``priority``.
         """
         return int(getattr(item, "priority", 1))
-
-    default_resource_bucket = default_priority
-
-    @staticmethod
-    def default_capacity(item):
-        """Map an ATS test-like item to its default capacity requirement.
-
-        Args:
-            item (object): Test-like object.  If present, ``item.priority`` must be
-                integer-like.
-
-        Returns:
-            int: ``max(1, int(item.priority))``, or ``1`` if ``item`` has no ``priority``.
-        """
-        return max(1, int(getattr(item, "prioirty", 1)))
 
     @staticmethod
     def default_serial(item):
@@ -131,22 +105,6 @@ class ReadyWorkSet:
             int: Priority for ``item``.  Higher values are considered first.
         """
         return int(self._priority_lookup(item))
-
-    def bucket_for(self, item):
-        """Backward-compatible alias for :meth:`priority_for`."""
-        return self.priority_for(item)
-
-    def capacity_for(self, item):
-        """Map ``item`` to a capacity requirement.
-
-        Args:
-            item (object): Scheduler item accepted by this work set's
-                ``capacity_lookup`` callback.
-
-        Returns:
-            int: Non-negative capacity requirement for ``item``.
-        """
-        return max(0, int(self._capacity_lookup(item)))
 
     def order_of(self, item):
         """Return the stable scheduler order used inside ready priorities.
@@ -185,13 +143,10 @@ class ReadyWorkSet:
         self._ready_serials.add(serial)
         return True
 
-    def pop_next(self, available_slots, ready_predicate, can_run, blocked_predicate=None):
+    def pop_next(self, ready_predicate, can_run, blocked_predicate=None):
         """Pop the highest-priority runnable item while restoring deferred candidates.
 
         Args:
-            available_slots (int): Current machine capacity.  Candidates whose
-                ``capacity_lookup`` value exceeds this are left queued; priority
-                itself does not need to represent capacity.
             ready_predicate (callable): Function with signature
                 ``ready_predicate(item: object) -> bool``.  It is rechecked for
                 each candidate so stale heap entries can be discarded.
@@ -210,8 +165,8 @@ class ReadyWorkSet:
             ready candidate was retained by ``blocked_predicate``.
 
         Notes:
-            Candidates that still satisfy ``ready_predicate`` but fail capacity
-            or ``can_run`` are restored to their original priorities before
+            Candidates that still satisfy ``ready_predicate`` but fail
+            ``can_run`` are restored to their original priorities before
             return.  Candidates that no longer satisfy ``ready_predicate`` are
             discarded as stale entries.
         """
@@ -224,9 +179,6 @@ class ReadyWorkSet:
                 self._ready_serials.discard(serial)
                 candidate = self._item_lookup(serial)
                 if candidate is None or not ready_predicate(candidate):
-                    continue
-                if available_slots is not None and self.capacity_for(candidate) > available_slots:
-                    deferred[priority].append((order_index, serial))
                     continue
                 if blocked_predicate is not None and blocked_predicate(candidate):
                     persistence_blocked = True
@@ -306,7 +258,7 @@ class ReadyWorkSet:
         """
         return len(self._ready_serials)
 
-    def bucket_counts(self, predicate=None):
+    def priority_counts(self, predicate=None):
         """Return queued item counts by priority.
 
         Args:
@@ -328,21 +280,7 @@ class ReadyWorkSet:
             counts[self.priority_for(item)] += 1
         return dict(counts)
 
-    def priority_counts(self, predicate=None):
-        """Return queued item counts by priority.
-
-        Args:
-            predicate (callable, optional): Function with signature
-                ``predicate(item: object) -> bool``.  If provided, only live
-                items accepted by this predicate are counted.
-
-        Returns:
-            dict: Mapping ``priority: int`` to ``count: int`` for queued live
-            items.
-        """
-        return self.bucket_counts(predicate)
-
-    def buckets(self):
+    def priorities(self):
         """Return a snapshot of priority keys currently known to the work set.
 
         Returns:
@@ -350,15 +288,6 @@ class ReadyWorkSet:
             they previously held work.
         """
         return list(self._ready_heaps.keys())
-
-    def priorities(self):
-        """Return a snapshot of priority keys currently known to the work set.
-
-        Returns:
-            list: Priority integers.  Empty priorities may be present if they
-            previously held work.
-        """
-        return self.buckets()
 
     def candidates_for_priority(self, priority, ready_predicate, candidate_predicate=None, limit=None):
         """Return queued candidates from one priority without mutating the work set.
@@ -389,10 +318,6 @@ class ReadyWorkSet:
             if limit is not None and len(candidates) >= limit:
                 break
         return candidates
-
-    def candidates_for_bucket(self, bucket, ready_predicate, candidate_predicate=None, limit=None):
-        """Backward-compatible alias for :meth:`candidates_for_priority`."""
-        return self.candidates_for_priority(bucket, ready_predicate, candidate_predicate, limit)
 
     def _heap_key(self, item):
         """Build the stored heap key for ``item``.

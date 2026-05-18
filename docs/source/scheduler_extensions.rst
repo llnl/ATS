@@ -52,15 +52,15 @@ A custom scheduler should preserve two invariants:
 ReadyWorkSet
 ============
 
-``ats.ready_queue.ReadyWorkSet`` stores work that is structurally ready but
-still needs a machine capacity check.  It groups work into resource buckets,
-usually processor counts, and returns the largest fitting candidate first.
+``ats.ready_queue.ReadyWorkSet`` stores work that is structurally ready.  It
+groups work into priority buckets, usually processor counts, and returns the
+largest runnable candidate first.
 
 The class is intentionally policy-light.  The owner supplies:
 
 * ``item_lookup(serial)`` to map stable ids back to live test objects;
 * ``order_lookup(item)`` to preserve scheduler order inside buckets;
-* an optional ``resource_bucket(item)`` if ``item.np`` is not the right bucket;
+* an optional ``priority_lookup(item)`` if ``item.np`` is not the right bucket;
 * a ``ready_predicate(item)`` each time candidates are enqueued or popped;
 * a ``can_run(item)`` predicate, normally ``machine.canRunNow``.
 
@@ -248,12 +248,11 @@ dependent updates, directory-block updates, and launch-failure recovery.
                    self.ready.enqueue_if_ready(candidate, self.is_ready)
 
        def next_ready(self, machine):
-           # ``pop_next`` picks the largest resource bucket that fits the
-           # current capacity, then checks machine policy.  Candidates that are
-           # still structurally ready but cannot run now are restored so a later
-           # scheduler pass can reconsider them.
+           # ``pop_next`` picks the largest priority bucket, then checks
+           # machine policy.  Candidates that are still structurally ready but
+           # cannot run now are restored so a later scheduler pass can
+           # reconsider them.
            test, _blocked = self.ready.pop_next(
-               machine.remainingCapacity(),
                self.is_ready,
                machine.canRunNow,
            )

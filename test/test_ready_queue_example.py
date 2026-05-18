@@ -102,7 +102,6 @@ class ReadyScheduler:
 
     def next_ready(self, machine):
         test, _blocked = self.ready.pop_next(
-            machine.remainingCapacity(),
             self.is_ready,
             machine.canRunNow,
         )
@@ -234,7 +233,6 @@ class ReadySchedulerExampleTest(unittest.TestCase):
         ready.enqueue_if_ready(high_priority_small, lambda test: test.status is CREATED)
 
         selected, blocked = ready.pop_next(
-            available_slots=4,
             ready_predicate=lambda test: test.status is CREATED,
             can_run=lambda _test: True,
         )
