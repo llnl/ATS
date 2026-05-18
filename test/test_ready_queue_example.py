@@ -147,7 +147,7 @@ class _Machine:
         return True
 
 
-def _make_test(serial, priority, block=None, wait_until=None);
+def _make_test(serial, np=1, block=None, wait_until=None, priority=None):
     return types.SimpleNamespace(
         serialNumber=serial,
         status=CREATED,
@@ -155,14 +155,14 @@ def _make_test(serial, priority, block=None, wait_until=None);
         dependents=[],
         block=block,
         independent=False,
-        np=priority,
-        priority=priority
-
+        np=np,
+        priority=priority if priority is not None else np,
     )
 
 
 class ReadySchedulerExampleTest(unittest.TestCase):
     def test_launches_ready_work_and_unblocks_direct_dependents(self):
+        """Verify that completion only unblocks direct dependents and relaunches them."""
         parent = _make_test(1, 1, block="case")
         child = _make_test(2, 1, block="case", wait_until=[parent])
         other = _make_test(3, 1, block="other")
@@ -192,8 +192,9 @@ class ReadySchedulerExampleTest(unittest.TestCase):
         self.assertIs(child.status, RUNNING)
 
     def test_prefers_default_processor_count_priority_and_restores_blocked_candidate(self):
-        small = _make_test(1, 1, block="small")
-        large = _make_test(2, 4, block="large")
+        """Verify that a blocked higher-bucket candidate is restored instead of dropped."""
+        small = _make_test(1, np=1, block="small")
+        large = _make_test(2, np=4, block="large")
         small.group = _Group(1, [small])
         large.group = _Group(2, [large])
 
@@ -214,6 +215,33 @@ class ReadySchedulerExampleTest(unittest.TestCase):
 
         self.assertEqual(machine.launched, [1, 2])
         self.assertIs(large.status, RUNNING)
+
+    def test_default_priority_uses_item_priority(self):
+        """Verify that ``ReadyWorkSet`` sorts by item priority, not by launch size."""
+        low_priority_large = _make_test(1, np=4, priority=10)
+        high_priority_small = _make_test(2, np=1, priority=20)
+        tests_by_serial = {
+            low_priority_large.serialNumber: low_priority_large,
+            high_priority_small.serialNumber: high_priority_small,
+        }
+        order = {
+            low_priority_large.serialNumber: 0,
+            high_priority_small.serialNumber: 1,
+        }
+        ready = ReadyWorkSet(
+            item_lookup=tests_by_serial.get,
+            order_lookup=lambda test: order[test.serialNumber],
+        )
+        ready.enqueue_if_ready(low_priority_large, lambda test: test.status is CREATED)
+        ready.enqueue_if_ready(high_priority_small, lambda test: test.status is CREATED)
+
+        selected, blocked = ready.pop_next(
+            ready_predicate=lambda test: test.status is CREATED,
+            can_run=lambda _test: True,
+        )
+
+        self.assertIs(selected, high_priority_small)
+        self.assertFalse(blocked)
 
 if __name__ == "__main__":
     unittest.main()

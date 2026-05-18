@@ -53,14 +53,14 @@ ReadyWorkSet
 ============
 
 ``ats.ready_queue.ReadyWorkSet`` stores work that is structurally ready.  It
-groups work into priority buckets, usually processor counts, and returns the
-largest runnable candidate first.
+groups work into scheduler-defined priority buckets and returns the largest
+runnable candidate first.
 
 The class is intentionally policy-light.  The owner supplies:
 
 * ``item_lookup(serial)`` to map stable ids back to live test objects;
 * ``order_lookup(item)`` to preserve scheduler order inside buckets;
-* an optional ``priority_lookup(item)`` if ``item.np`` is not the right bucket;
+* an optional ``priority_lookup(item)`` if ``item.np`` is not the right priority key;
 * a ``ready_predicate(item)`` each time candidates are enqueued or popped;
 * a ``can_run(item)`` predicate, normally ``machine.canRunNow``.
 
@@ -107,7 +107,7 @@ dependent updates, directory-block updates, and launch-failure recovery.
            # Stable order is separate from serial number.  Serial numbers are
            # usually creation order, but a scheduler may sort groups or apply
            # priority before loading tests.  Keep the order you want preserved
-           # inside each resource bucket.
+           # inside each priority bucket.
            self.order = {}
 
            # Cache the number of unfinished wait dependencies for each test.
@@ -121,7 +121,7 @@ dependent updates, directory-block updates, and launch-failure recovery.
            self.tests_by_block = defaultdict(list)
            self.blocks = {}
 
-           # The ready set decides queue mechanics: resource buckets, stable
+           # The ready set decides queue mechanics: priority buckets, stable
            # in-bucket ordering, stale-entry cleanup, and temporary deferral of
            # candidates that are ready but cannot pass machine policy yet.
            self.ready = ReadyWorkSet(
@@ -248,7 +248,7 @@ dependent updates, directory-block updates, and launch-failure recovery.
                    self.ready.enqueue_if_ready(candidate, self.is_ready)
 
        def next_ready(self, machine):
-           # ``pop_next`` picks the largest priority bucket, then checks
+           # ``pop_next`` picks the highest-priority bucket, then checks
            # machine policy.  Candidates that are still structurally ready but
            # cannot run now are restored so a later scheduler pass can
            # reconsider them.

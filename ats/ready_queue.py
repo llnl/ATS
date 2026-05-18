@@ -6,8 +6,9 @@ prefers the highest runnable priority, and restores deferred candidates when a
 machine policy cannot run them yet.
 
 Items are usually ``ats.tests.AtsTest`` instances, but the class only requires
-test-like objects with stable serial identifiers.  By default, an item must
-have:
+test-like objects with stable serial identifiers.  The lookup callbacks must
+continue to return the same serial, order, and priority values for an item
+while that item remains queued.  By default, an item must have:
 
 * ``serialNumber``: integer-like unique id for this scheduler;
 * ``priority``: optional integer-like scheduling priority;
@@ -44,14 +45,18 @@ class ReadyWorkSet:
                 serial id from a heap entry back to the live scheduler item.
             order_lookup (callable): Function with signature
                 ``order_lookup(item: object) -> int``.  Lower values run first
-                inside one priority bucket.
+                inside one priority bucket, and the result must stay stable
+                for as long as an item remains queued.
             priority_lookup (callable, optional): Function with signature
                 ``priority_lookup(item: object) -> int``.  Higher values are
                 considered first.  The default uses ``item.priority`` or ``1``
-                when ``priority`` is missing.
+                when ``priority`` is missing.  The result must stay stable for
+                as long as an item remains queued.
             serial_lookup (callable, optional): Function with signature
                 ``serial_lookup(item: object) -> int``.  It returns the stable
                 unique id for an item.  The default uses ``item.serialNumber``.
+                The result must stay stable for as long as an item remains
+                queued.
         """
         self._item_lookup = item_lookup
         self._order_lookup = order_lookup
