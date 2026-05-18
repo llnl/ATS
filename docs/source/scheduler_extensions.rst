@@ -53,14 +53,14 @@ ReadyWorkSet
 ============
 
 ``ats.ready_queue.ReadyWorkSet`` stores work that is structurally ready.  It
-groups work into scheduler-defined priority buckets and returns the largest
+groups work into scheduler-defined priority buckets and returns the highest-priority
 runnable candidate first.
 
 The class is intentionally policy-light.  The owner supplies:
 
 * ``item_lookup(serial)`` to map stable ids back to live test objects;
 * ``order_lookup(item)`` to preserve scheduler order inside buckets;
-* an optional ``priority_lookup(item)`` if ``item.np`` is not the right priority key;
+* ``priority_lookup(item)`` to define the priority of a test.
 * a ``ready_predicate(item)`` each time candidates are enqueued or popped;
 * a ``can_run(item)`` predicate, normally ``machine.canRunNow``.
 

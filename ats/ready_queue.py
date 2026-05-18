@@ -47,10 +47,9 @@ class ReadyWorkSet:
                 ``order_lookup(item: object) -> int``.  Lower values run first
                 inside one priority bucket, and the result must stay stable
                 for as long as an item remains queued.
-            priority_lookup (callable, optional): Function with signature
+            priority_lookup (callable): Function with signature
                 ``priority_lookup(item: object) -> int``.  Higher values are
-                considered first.  The default uses ``item.priority`` or ``1``
-                when ``priority`` is missing.  The result must stay stable for
+                considered first. The result must stay stable for
                 as long as an item remains queued.
             serial_lookup (callable, optional): Function with signature
                 ``serial_lookup(item: object) -> int``.  It returns the stable
@@ -60,7 +59,7 @@ class ReadyWorkSet:
         """
         self._item_lookup = item_lookup
         self._order_lookup = order_lookup
-        self._priority_lookup = priority_lookup or self.default_priority
+        self._priority_lookup = priority_lookup
         self._serial_lookup = serial_lookup or self.default_serial
         self.reset()
 
@@ -73,18 +72,6 @@ class ReadyWorkSet:
         self._ready_heaps = defaultdict(list)
         self._ready_serials = set()
 
-    @staticmethod
-    def default_priority(item):
-        """Map an ATS test-like item to its default integer priority.
-
-        Args:
-            item (object): Test-like object.  If present, ``item.priority``
-                must be integer-like.
-
-        Returns:
-            int: ``int(item.priority)``, or ``1`` if ``item`` has no ``priority``.
-        """
-        return int(getattr(item, "priority", 1))
 
     @staticmethod
     def default_serial(item):
