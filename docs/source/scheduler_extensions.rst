@@ -49,6 +49,25 @@ A custom scheduler should preserve two invariants:
   readiness, but it should still call ``machine.canRunNow(test)`` or
   ``machine.startRun(test)`` before consuming resources.
 
+Lifecycle Hooks
+===============
+
+``manager.add_test_defined_hook(callback)``
+   Called when a completed test definition or group is published during
+   streaming discovery.  The callback receives the object passed to
+   ``manager.test_defined(value)``.
+
+``manager.remove_test_defined_hook(callback)``
+   Removes a previously registered test-defined callback.  Removing a callback
+   that is no longer registered is a no-op.
+
+``manager.test_defined(value)``
+   Publishes a completed definition to all currently registered callbacks.
+
+Drivers that install hooks around one run should unregister them during
+cleanup.  Hook bodies should stay short and hand work to the driver's main
+scheduling thread when scheduler or machine state needs to change.
+
 ReadyWorkSet
 ============
 
@@ -278,6 +297,22 @@ Production schedulers also need logging, retry behavior, group-output handling,
 periodic reports, and a cheap "work remains" check.  The example shows the
 division of labor: the ready set stores candidates; the scheduler owns
 dependency and block policy; the machine owns resource admission.
+
+Beginning Tutorial: Streaming Discovery
+=======================================
+
+Streaming discovery overlaps expensive input parsing with test execution.  The
+safe pattern is single-producer discovery plus main-thread scheduling:
+
+1. The driver registers ``manager.add_test_defined_hook``.
+2. A discovery thread calls ``manager.collectTests()``.
+3. Test definitions are pushed into a thread-safe queue by the hook.
+4. The main thread drains the queue, normalizes ATS dependencies and names, and
+   hands completed interactive tests to the scheduler.
+5. Only the main thread calls scheduler or machine methods.
+
+This pattern lets an allocation start useful work earlier while preserving ATS
+machine and scheduler state on one thread.
 
 Design Checklist
 ================

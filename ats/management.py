@@ -7,6 +7,7 @@ from ats.times import datestamp, Duration, wallTime, atsStartTimeLong
 from ats.tests import AtsTest
 from ats.log import log, terminal
 from ats.parser import AtsCodeParser, AtsFileParser
+from ats.cwd import chdir
 
 def standardIntrospection(line):
     "Standard magic detector for input."
@@ -38,6 +39,7 @@ class AtsManager(object):
     * collectTimeEnded -- when test collection was done
     * onCollected -- just after test collection ends
     * on Prioritized -- just after test totalPriority has been assigned
+    * testDefinedRoutines -- list of routines for streaming discovery callbacks
     * onExitRoutines -- list of routines for onExit to call
     * onResultsRoutines -- list of routines for onResults to call
     * continuationFileName -- "continue.ats" if written
@@ -58,6 +60,7 @@ class AtsManager(object):
         self.badlist = []
         self.onCollectedRoutines = []
         self.onPrioritizedRoutines = []
+        self.testDefinedRoutines = []
         self.onExitRoutines = []
         self.beforeRunRoutines = []
         self.onResultsRoutines = []
@@ -186,7 +189,6 @@ class AtsManager(object):
 
     def _source(self, path, introspector, vocabulary):
         "Process source file. Returns true if successful"
-        here = os.getcwd()
         t = abspath(path)
         directory, filename = os.path.split(t)
         name, e = os.path.splitext(filename)
@@ -229,58 +231,56 @@ class AtsManager(object):
             if magic is not None:
                 atstext.append(magic)
         f.close()
-        if atstext:
-            log('-> Executing statements in', t1, echo=False)
-            log.indent()
-            code = '\n'.join(atstext)
-            if debug():
-                for line in atstext:
-                    log(line, echo=False)
-            os.chdir(directory)
-            try:
-                exec(code, testenv)
-                # parser = AtsCodeParser(code)
-                # for code_segment in parser.get_code_iterator():
-                #     exec(code_segment, testenv)
+        with chdir(directory):
+            if atstext:
+                log('-> Executing statements in', t1, echo=False)
+                log.indent()
+                code = '\n'.join(atstext)
                 if debug():
-                    log('Finished ', t1, datestamp())
-            except KeyboardInterrupt:
-                raise
-            except Exception as details:
-                self.badlist.append(t1)
-                log('ATS ERROR while processing statements in', t1, ':', echo=True)
-                log(details, echo=True)
-            log.dedent()
-        else:
-            log('-> Sourcing', t1, echo=False)
-            log.indent()
-            os.chdir(directory)
-            try:
-                exec(compile(open(t1, "rb").read(), t1, 'exec'), testenv)
-                # parser = AtsFileParser(t1)
-                # for code_segment in parser.get_code_iterator():
-                #     exec(code_segment, testenv)
-                if debug():
-                    log('Finished ', t1, datestamp())
+                    for line in atstext:
+                        log(line, echo=False)
+                try:
+                    exec(code, testenv)
+                    # parser = AtsCodeParser(code)
+                    # for code_segment in parser.get_code_iterator():
+                    #     exec(code_segment, testenv)
+                    if debug():
+                        log('Finished ', t1, datestamp())
+                except KeyboardInterrupt:
+                    raise
+                except Exception as details:
+                    self.badlist.append(t1)
+                    log('ATS ERROR while processing statements in', t1, ':', echo=True)
+                    log(details, echo=True)
+                log.dedent()
+            else:
+                log('-> Sourcing', t1, echo=False)
+                log.indent()
+                try:
+                    exec(compile(open(t1, "rb").read(), t1, 'exec'), testenv)
+                    # parser = AtsFileParser(t1)
+                    # for code_segment in parser.get_code_iterator():
+                    #     exec(code_segment, testenv)
+                    if debug():
+                        log('Finished ', t1, datestamp())
 
-                result = 1
-            except KeyboardInterrupt:
-                raise
-            except Exception as details:
-                self.badlist.append(t1)
-                log('ATS ERROR in input file', t1, ':', echo=True)
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                log(traceback.print_exception(exc_type, exc_value, exc_traceback), echo=True)
-                log('------------------------------------------', echo=True)
+                    result = 1
+                except KeyboardInterrupt:
+                    raise
+                except Exception as details:
+                    self.badlist.append(t1)
+                    log('ATS ERROR in input file', t1, ':', echo=True)
+                    exc_type, exc_value, exc_traceback = sys.exc_info()
+                    log(traceback.print_exception(exc_type, exc_value, exc_traceback), echo=True)
+                    log('------------------------------------------', echo=True)
 
-            log.dedent()
-        AtsTest.endGroup()
-        unstick()
-        stick(**savestuck)
-        untack()
-        tack(**savetacked)
-        AtsTest.waitEndSource()
-        os.chdir(here)
+                log.dedent()
+            AtsTest.endGroup()
+            unstick()
+            stick(**savestuck)
+            untack()
+            tack(**savetacked)
+            AtsTest.waitEndSource()
 
     def onCollected(self, routine):
         "Call routine after collection with argument manager."
@@ -289,6 +289,25 @@ class AtsManager(object):
     def onPrioritized(self, routine):
         "Call routine after collection with argument manager."
         self.onPrioritizedRoutines.append(routine)
+
+    def add_test_defined_hook(self, routine):
+        """Call routine when streaming discovery publishes a completed definition."""
+        if not callable(routine):
+            raise AtsError("test-defined hook must be callable")
+        self.testDefinedRoutines.append(routine)
+        return routine
+
+    def remove_test_defined_hook(self, routine):
+        """Remove a previously registered streaming discovery hook."""
+        try:
+            self.testDefinedRoutines.remove(routine)
+        except ValueError:
+            pass
+
+    def test_defined(self, test_definition):
+        """Publish a completed test or test group to streaming discovery hooks."""
+        for routine in list(self.testDefinedRoutines):
+            routine(test_definition)
 
     def onExit(self, routine):
         "Call postprocessing routine before exiting with argument manager."
