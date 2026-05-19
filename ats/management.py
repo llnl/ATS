@@ -1,4 +1,4 @@
-import os, re, sys, time, tempfile, traceback, socket
+import os, re, sys, time, tempfile, traceback, socket, queue, threading
 from ats import configuration, version
 from ats.atsut import INVALID, PASSED, FAILED, SKIPPED, BATCHED, LSFERROR, \
                   RUNNING, FILTERED, CREATED, TIMEDOUT, HALTED, EXPECTED,\
@@ -819,10 +819,9 @@ class AtsManager(object):
         log('Default time limit for each test=',
             Duration(configuration.timelimit))
 
-    def core(self):
-        "This is the 'guts' of ATS."
-
-        if configuration.SYS_TYPE == "toss_3_x86_64":
+    def _checkCoreMachinePolicy(self):
+        """Validate machine policy that applies before collection or execution."""
+        if configuration.SYS_TYPE == "toss_4_x86_64":
             if configuration.options.bypassSerialMachineCheck == False:
                 log("**********************************************************************************", echo=True)
                 log("*** This is a serial machine --- Do not use ATS on more than 1 node here!      ***", echo=True)
@@ -830,6 +829,197 @@ class AtsManager(object):
                 log("*** Use ATS option  --bypassSerialMachineCheck if you promise to run on 1 Node ***", echo=True)
                 log("**********************************************************************************", echo=True)
                 sys.exit(-1)
+
+    def _runOnCollectedRoutines(self, keyboard_message):
+        """Run registered onCollected callbacks and return whether they succeeded."""
+        try:
+            for f in self.onCollectedRoutines:
+                log("Calling onCollected routine", f.__name__, echo=self.verbose)
+                f(self)
+        except KeyboardInterrupt:
+            log(keyboard_message, echo=True)
+            return False
+        except Exception:
+            log("Error in user-specified onCollected routine.", echo=True)
+            log(traceback.format_exc(), echo=True)
+            return False
+        return True
+
+    def _dispatchBatchTests(self, batchTests):
+        """Load batch tests through the batch machine if one is active."""
+        if not self.batchmachine or not batchTests:
+            return True
+        if configuration.options.skip:
+            log("Skipping execution due to --skip")
+            return True
+        try:
+            log("Sending %d tests to %s." % (len(batchTests), self.batchmachine.name), echo=True)
+            self.batchmachine.load(batchTests)
+        except AtsError:
+            log(traceback.format_exc(), echo=True)
+            log("ATS ERROR.", echo=True)
+            return False
+        except KeyboardInterrupt:
+            log("Keyboard interrupt while dispatching batch, terminating.", echo=True)
+            return False
+        return True
+
+    def _killRunningTests(self):
+        """Give running tests a moment to exit, then kill any survivors."""
+        time.sleep(3)
+        for test in self.testlist:
+            if test.status is RUNNING:
+                self.machine.kill(test)
+
+    def _finishCoreRun(self, interactiveTests, dieDieDie, found_tests=True, batchTests=None):
+        """Shared shutdown, no-test handling, and continuation-file generation."""
+        if dieDieDie:
+            self._killRunningTests()
+
+        self.machine.quit() #machine shutdown / cleanup
+
+        if not found_tests and not (batchTests or []):
+            log("No tests found.", echo=True)
+            return False
+
+        self.continuationFile(interactiveTests)
+        return not dieDieDie
+
+    def core(self, stream=False):
+        "This is the 'guts' of ATS."
+
+        self._checkCoreMachinePolicy()
+
+        if stream:
+            discovery_queue = queue.Queue()
+            discovery_done = threading.Event()
+            discovery_errors = []
+            all_interactive_tests = []
+            all_batch_tests = []
+            name_counts = {}
+            on_collected_ran = False
+
+            def testDefined(test_definition):
+                """Called by test construction on the discovery thread."""
+                discovery_queue.put(test_definition)
+
+            def discoverTests():
+                """Collect tests and report any failure back to the scheduler thread."""
+                try:
+                    self.collectTests()
+                except BaseException:
+                    discovery_errors.append(traceback.format_exc())
+                finally:
+                    self.collectTimeEnded = datestamp(long_format=True)
+                    discovery_done.set()
+
+            self.add_test_defined_hook(testDefined)
+            discovery_thread = threading.Thread(target=discoverTests, name="ats-test-discovery")
+            discovery_thread.daemon = True
+            discovery_thread.start()
+
+            scheduler = self.machine.scheduler
+            scheduler.prioritize([])
+            scheduler.load([])
+            self.preprocess()
+
+            log("Beginning test executions")
+            timeStatusReport = time.time()
+            if configuration.options.continueFreq is not None:
+                timeContinuation = time.time()
+                continuationStep = int(configuration.options.continueFreq * 60)
+            else:
+                timeContinuation = None
+                continuationStep = None
+
+            found_tests = False
+            dieDieDie = False
+
+            try:
+                while True:
+                    block_for_discovery = (
+                        not discovery_done.is_set()
+                        and self.machine.numberTestsRunning == 0
+                        and not getattr(scheduler, "groups", [])
+                    )
+                    events = self._streamingDrainDiscoveryQueue(
+                        discovery_queue,
+                        block=block_for_discovery,
+                        timeout=getattr(self.machine, "naptime", 0.2),
+                    )
+                    for test_definition in events:
+                        tests = self._streamingTestsFromDefinition(test_definition)
+                        if not tests:
+                            continue
+                        found_tests = True
+                        self._streamingFinalizeWaits(tests, self.testlist)
+                        self._streamingEnsureDistinctNames(tests, name_counts)
+
+                        interactiveTests = [t for t in tests if t.status is CREATED]
+                        batchTests = [t for t in tests if t.status is BATCHED]
+                        if interactiveTests:
+                            all_interactive_tests.extend(interactiveTests)
+                            scheduler.addInteractiveTests(interactiveTests)
+                        if batchTests:
+                            all_batch_tests.extend(batchTests)
+                            if not self._dispatchBatchTests(batchTests):
+                                dieDieDie = True
+
+                    if discovery_done.is_set() and not on_collected_ran:
+                        on_collected_ran = True
+                        if not self._runOnCollectedRoutines(
+                            "Keyboard interrupt while collecting tests, terminating."
+                        ):
+                            dieDieDie = True
+
+                    if dieDieDie or discovery_errors:
+                        break
+
+                    timeNow = time.time()
+                    timePassed = timeNow - timeStatusReport
+                    if timePassed >= configuration.options.reportFreq * 60:
+                        terminal("ATS REPORT AT ELAPSED TIME", wallTime())
+                        timeStatusReport = timeNow
+                        self.summary(terminal)
+                        scheduler.periodicReport()
+
+                    if configuration.options.continueFreq is not None:
+                        timeNow = time.time()
+                        if (timeNow - timeContinuation) >= continuationStep:
+                            self.continuationFile(all_interactive_tests, True)
+                            timeContinuation = timeNow
+
+                    unfinished = False
+                    if getattr(scheduler, "groups", []):
+                        unfinished = scheduler.step()
+                    elif self.machine.numberTestsRunning > 0:
+                        self.machine.checkRunning()
+                        unfinished = self.machine.numberTestsRunning > 0
+
+                    if discovery_done.is_set() and discovery_queue.empty() and not unfinished:
+                        break
+            except AtsError:
+                log(traceback.format_exc(), echo=True)
+                log("ATS ERROR. Removing running jobs....", echo=True)
+                dieDieDie = True
+            except KeyboardInterrupt:
+                log("Keyboard interrupt. Removing running jobs....", echo=True)
+                dieDieDie = True
+            finally:
+                discovery_thread.join()
+                self.remove_test_defined_hook(testDefined)
+
+            if discovery_errors:
+                for error in discovery_errors:
+                    log(error, echo=True)
+                dieDieDie = True
+
+            return self._finishCoreRun(
+                all_interactive_tests,
+                dieDieDie,
+                found_tests=found_tests,
+                batchTests=all_batch_tests,
+            )
 
         # Phase 1 -- collect the tests
         errorOccurred = False
@@ -850,20 +1040,9 @@ class AtsManager(object):
         if errorOccurred:
             return False
 
-        try:
-            for f in self.onCollectedRoutines:
-                log("Calling onCollected routine", f.__name__,
-                    echo=self.verbose)
-                f(self)
-        except KeyboardInterrupt:
-            log("Keyboard interrupt while collecting tests, terminating.",
-                echo=True)
-            errorOccurred = True
-        except Exception:
-            log("Error in user-specified onCollected routine.", echo=True)
-            log(traceback.format_exc(), echo=True)
-            errorOccured = True
-        if errorOccurred:
+        if not self._runOnCollectedRoutines(
+            "Keyboard interrupt while collecting tests, terminating."
+        ):
             return False
 
         # divide into interactive and batch tests
@@ -879,21 +1058,8 @@ class AtsManager(object):
 
         # Phase 2 -- dispatch the batch tests
 
-        if self.batchmachine and batchTests:
-            if configuration.options.skip:
-                log("Skipping execution due to --skip")
-            else:
-                try:
-                    log("Sending %d tests to %s." % (len(batchTests), self.batchmachine.name),
-                        echo = True)
-                    self.batchmachine.load(batchTests)
-                except AtsError:
-                    log(traceback.format_exc(), echo=True)
-                    log("ATS ERROR.", echo=True)
-                    return False
-                except KeyboardInterrupt:
-                    log("Keyboard interrupt while dispatching batch, terminating.", echo=True)
-                    return False
+        if not self._dispatchBatchTests(batchTests):
+            return False
 
         # Phase 3 -- run the interactive tests
 
@@ -914,7 +1080,7 @@ class AtsManager(object):
             except Exception:
                 log("ATS ERROR in prioritizing tests.", echo=True)
                 log(traceback.format_exc(), echo=True)
-                errorOccured = True
+                errorOccurred = True
             if errorOccurred:
                 return False
 
@@ -929,14 +1095,6 @@ class AtsManager(object):
                 dieDieDie = True
                 log("Keyboard interrupt. Removing running jobs....", echo=True)
 
-        if dieDieDie:
-            time.sleep(3)
-            for test in self.testlist:
-                if (test.status is RUNNING):
-                    self.machine.kill(test)
-
-        self.machine.quit() #machine shutdown / cleanup
-
         # Phase 4 -- Continuation file
 #        for t in interactiveTests:
 #            if t.status not in  (PASSED, EXPECTED, FILTERED):
@@ -945,10 +1103,64 @@ class AtsManager(object):
 #            self.continuationFileName = ''
 #            return
 
-        self.continuationFile(interactiveTests)
+        return self._finishCoreRun(interactiveTests, dieDieDie)
 
-        return True
+    def _streamingTestsFromDefinition(self, test_definition):
+        """Return ATS tests represented by a streamed test-defined event."""
+        if test_definition is None:
+            return []
+        test_group = getattr(test_definition, "atsGroup", None)
+        if test_group is not None:
+            return list(test_group)
+        if isinstance(test_definition, AtsTest):
+            return [test_definition]
+        if hasattr(test_definition, "serialNumber") and hasattr(test_definition, "group"):
+            return [test_definition]
+        if isinstance(test_definition, str):
+            return []
+        try:
+            return list(test_definition)
+        except TypeError:
+            pass
+        return []
 
+    def _streamingFinalizeWaits(self, tests, parent_candidates=None):
+        """Apply ATS parent wait edges before streamed tests reach the scheduler."""
+        streamed_serials = {test.serialNumber for test in tests}
+        parents = list(parent_candidates) if parent_candidates is not None else list(tests)
+        for parent in parents:
+            if parent.status not in (CREATED, RUNNING):
+                continue
+            for dependent in getattr(parent, "dependents", []):
+                if dependent.serialNumber not in streamed_serials or parent in dependent.waitUntil:
+                    continue
+                dependent.waitUntil = dependent.waitUntil + [parent]
+
+    def _streamingEnsureDistinctNames(self, tests, name_counts):
+        """Apply ATS-style duplicate-name suffixes before streamed tests can run."""
+        for current in tests:
+            name = current.name.lower()
+            count = name_counts.get(name, 0) + 1
+            name_counts[name] = count
+            if count > 1:
+                current.name += ("#%d" % count)
+
+    def _streamingDrainDiscoveryQueue(self, discovery_queue, block=False, timeout=0.0):
+        """Return all currently available testcase-discovery events."""
+        events = []
+        try:
+            if block:
+                events.append(discovery_queue.get(timeout=timeout))
+            else:
+                events.append(discovery_queue.get_nowait())
+        except queue.Empty:
+            return events
+
+        while True:
+            try:
+                events.append(discovery_queue.get_nowait())
+            except queue.Empty:
+                return events
 
     def continuationFile(self, interactiveTests, force = False):
 
