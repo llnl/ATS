@@ -61,7 +61,17 @@ class StandardScheduler (object):
         return len(self.groups) > 0
 
     def addInteractiveTests(self, interactiveTests):
-        """Add newly-discovered interactive tests after the scheduler is loaded."""
+        """Add newly-discovered interactive tests after the scheduler is loaded.
+
+        Args:
+            interactiveTests (iterable): ATS tests discovered after the initial
+                ``load`` call.  ``AtsManager.core(stream=True)`` calls this on
+                the main thread as completed definitions are published.
+
+        Returns:
+            bool: ``True`` when at least one test was added; ``False`` when the
+            input iterable was empty.
+        """
         interactiveTests = list(interactiveTests)
         if not interactiveTests:
             return False
