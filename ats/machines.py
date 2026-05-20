@@ -2,6 +2,10 @@
 """
 from collections import deque
 import selectors, subprocess, sys, os, threading, time, shlex
+from ats.completion_detector import (
+    completion_detection_mode_from_env,
+    create_completion_detector,
+)
 from ats.atsut import RUNNING, TIMEDOUT, PASSED, FAILED, LSFERROR, \
      SKIPPED, HALTED, AtsError
 from ats.log import log, terminal
@@ -21,6 +25,28 @@ class MachineCore(object):
     canRunNow_debugClass = False
     printExperimentalNotice = False
     printSleepBeforeSrunNotice = True
+
+    def __init__(self, completion_detection_mode=None):
+        """Initialize machine-owned completion-detection state.
+
+        Args:
+            completion_detection_mode (str|None): Requested completion-detector
+                mode. When omitted, ATS uses ``ATS_COMPLETION_DETECTION_MODE``
+                from the environment and falls back to ``"fast_path"``.
+
+        Returns:
+            None: Completion detector state and hooks are initialized.
+        """
+        self._completionEvent = threading.Event()
+        self._completionQueue = deque()
+        self._completionQueueIds = set()
+        self._completionQueueLock = threading.Lock()
+        self._completionStats = {}
+        self._completionStatsLock = threading.Lock()
+        self._completion_span_hooks = []
+        self._completion_queue_snapshot_hooks = []
+        self._completionDetector = None
+        self.configureCompletionDetector(completion_detection_mode)
 
     # self.numberTestsRunningMax is not really the max number of tests running
     # but is rather the max number of processors which can run tests.
@@ -83,6 +109,24 @@ class MachineCore(object):
         #     return -1, fraction
         return 0, fraction
 
+    def configureCompletionDetector(self, completion_detection_mode=None):
+        """Instantiate and install the requested completion detector.
+
+        Args:
+            completion_detection_mode (str|None): Requested detector mode. When
+                omitted, ATS uses ``ATS_COMPLETION_DETECTION_MODE`` from the
+                environment.
+
+        Returns:
+            object: Newly created completion detector strategy instance.
+        """
+        mode = completion_detection_mode
+        if mode is None:
+            mode = completion_detection_mode_from_env()
+        self.completion_detection_mode = mode
+        self._completionDetector = create_completion_detector(self, mode)
+        return self._completionDetector
+
     def checkRunning(self):
         """Update ``self.running`` after checking for finished child processes.
 
@@ -90,50 +134,7 @@ class MachineCore(object):
             None: ``self.running`` is rewritten in place and completion
             callbacks may run for newly finished tests.
         """
-        completion_limit = self._completionFastPathDrainLimit()
-        if self._useLegacyCompletionPolling():
-            if self._pollRunningTests(
-                allow_running_checks=True,
-                completion_limit=completion_limit,
-            ):
-                return
-            time.sleep(self.naptime)
-            self._pollRunningTests(
-                allow_running_checks=True,
-                completion_limit=completion_limit,
-            )
-            return
-        if self._useQueuedCompletionDetection():
-            self._incrementCompletionStat("check_running_completion_queue_mode")
-            if self._pollQueuedCompletionTests(completion_limit=completion_limit):
-                self._incrementCompletionStat("check_running_queue_pre_drain_completed")
-                return
-            self._incrementCompletionStat("check_running_queue_pre_drain_empty")
-            self._incrementCompletionStat("check_running_wait_for_completion_signal")
-            self._waitForCompletionSignal()
-            if self._pollQueuedCompletionTests(completion_limit=completion_limit):
-                self._incrementCompletionStat("check_running_queue_post_wait_completed")
-                return
-            self._incrementCompletionStat("check_running_queue_post_wait_empty")
-            self._incrementCompletionStat("check_running_queue_fallback_poll_running")
-            self._pollRunningTests(
-                allow_running_checks=True,
-                completion_limit=completion_limit,
-            )
-            return
-        if self._pollRunningTests(
-            allow_running_checks=False,
-            completion_limit=completion_limit,
-        ):
-            return
-        completion_hints = self._waitForCompletionSignal()
-        if completion_hints and self._pollRunningTests(
-            allow_running_checks=False,
-            prioritized=completion_hints,
-            completion_limit=completion_limit,
-        ):
-            return
-        self._pollRunningTests(allow_running_checks=True)
+        self._completionDetector.check_running()
 
     def remainingCapacity(self):
         """How many processors are free? Could be overriden to answer the real question,
@@ -316,8 +317,13 @@ class MachineCore(object):
             remaining.append(test)
             remaining_ids.add(test_id)
 
-    def _waitForCompletionSignal(self):
+    def _waitForCompletionSignal(self, use_queue_event_wait=False):
         """Wait for a local child exit, using pidfds when available.
+
+        Args:
+            use_queue_event_wait (bool): When ``True``, fall back to waiting on
+                the machine completion event instead of sleeping if pidfds are
+                unavailable.
 
         Returns:
             list: Running tests that were signaled as likely completed during
@@ -368,7 +374,7 @@ class MachineCore(object):
             if registered:
                 return ready
 
-            if self._useQueuedCompletionDetection():
+            if use_queue_event_wait:
                 used_queue_event_wait = True
                 result_kind = "queue_event_wait"
                 self._incrementCompletionStat("_waitForCompletionSignal_queue_event_wait")
@@ -393,26 +399,6 @@ class MachineCore(object):
                     "result": result_kind,
                 },
             )
-
-    def _useLegacyCompletionPolling(self):
-        """Return whether legacy double-poll completion detection is enabled.
-
-        Returns:
-            bool: ``True`` when ``completion_detection_mode`` is
-            ``"legacy_poll"``.
-        """
-        mode = str(getattr(self, "completion_detection_mode", "") or "").strip().lower()
-        return mode == "legacy_poll"
-
-    def _useQueuedCompletionDetection(self):
-        """Return whether queued completion detection is enabled.
-
-        Returns:
-            bool: ``True`` when ``completion_detection_mode`` is
-            ``"completion_queue"``.
-        """
-        mode = str(getattr(self, "completion_detection_mode", "") or "").strip().lower()
-        return mode == "completion_queue"
 
     def _completionStatsEnabled(self):
         """Return whether aggregated completion counters should be tracked.
@@ -636,7 +622,7 @@ class MachineCore(object):
         if getattr(test, "ats_completion_signal_us", None) is None:
             test.ats_completion_signal_us = observed_us
             self._incrementCompletionStat("completion_signal_recorded")
-        if not self._useQueuedCompletionDetection():
+        if not getattr(self._completionDetector, "uses_completion_queue", False):
             return
         with self._completionQueueLock:
             test_id = id(test)
@@ -1365,7 +1351,7 @@ The subprocess part of launch. Also the part that might fail.
                 else:
                     test.child = subprocess.Popen(test.commandList, cwd=test.directory, stdout = subprocess.PIPE, stderr=subprocess.STDOUT, env=E, stdin=testStdin)
 
-            self._ensurePidfd(test)
+            self._completionDetector.prepare_for_launch(test)
             test.set(RUNNING, test.commandLine)
 
             self.running.append(test)
@@ -1503,12 +1489,17 @@ However, the most important methods have a "basic" verison you can just call.
 You can call your class anything, just put the correct comment line at
 the top of your machine. See documentation for porting.
 """
-    def __init__(self, name, npMaxH):
+    def __init__(self, name, npMaxH, completion_detection_mode=None):
         """Be sure to call this from child if overridden
 
 Initialize this machine. npMax supplied by __init__, hardware limit.
 If npMax is negative, may be overridden by command line. If positive,
 is hard upper limit.
+
+Args:
+    name (str): ATS machine type label.
+    npMaxH (int): Hardware processor-slot limit.
+    completion_detection_mode (str|None): Requested completion detector mode.
 """
 
         # print "DEBUG Machine:MachineCore %s %d" % (name, npMaxH)
@@ -1522,14 +1513,9 @@ is hard upper limit.
         self.hardLimit = (npMaxH > 0)
         self.naptime = 0.2 #number of seconds to sleep between checks on running tests.
         self.running = []
-        self._completionEvent = threading.Event()
-        self._completionQueue = deque()
-        self._completionQueueIds = set()
-        self._completionQueueLock = threading.Lock()
-        self._completionStats = {}
-        self._completionStatsLock = threading.Lock()
-        self._completion_span_hooks = []
-        self._completion_queue_snapshot_hooks = []
+        super(Machine, self).__init__(
+            completion_detection_mode=completion_detection_mode,
+        )
         self.runOrder = 0
         from ats import schedulers
         self.scheduler = schedulers.StandardScheduler()

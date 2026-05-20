@@ -49,6 +49,64 @@ A custom scheduler should preserve two invariants:
   readiness, but it should still call ``machine.canRunNow(test)`` or
   ``machine.startRun(test)`` before consuming resources.
 
+Completion Detectors
+====================
+
+ATS machines delegate running-test completion policy to a completion detector.
+The detector keeps strategy choice out of ``MachineCore.checkRunning()`` while
+reusing the same machine-owned helpers for pidfds, watcher threads, completion
+queues, and aggregated completion statistics.
+
+ATS ships three detector types:
+
+* ``ats.completion_fast_path.FastPathCompletionDetector`` waits for likely
+  completions first and then falls back to a full running-test check;
+* ``ats.completion_queue.CompletionQueueCompletionDetector`` records signaled
+  completions into a queue and drains only those tests before falling back;
+* ``ats.completion_legacy_poll.LegacyPollCompletionDetector`` preserves the
+  historical double-poll-with-sleep behavior.
+
+The normal machine constructor accepts ``completion_detection_mode`` and
+instantiates the matching detector:
+
+::
+
+   from ats.machines import Machine
+
+   machine = Machine(
+       "generic",
+       -1,
+       completion_detection_mode="completion_queue",
+   )
+
+Wrappers that need to choose the detector before ATS configuration creates the
+machine can set ``ATS_COMPLETION_DETECTION_MODE`` in the environment:
+
+::
+
+   import os
+
+   os.environ["ATS_COMPLETION_DETECTION_MODE"] = "legacy_poll"
+
+   import ats
+
+   ats.manager.init(clas="...")
+
+Custom machine subclasses should pass the mode through to ``Machine`` so the
+selection stays explicit at construction time:
+
+::
+
+   from ats import machines
+
+   class MyMachine(machines.Machine):
+       def __init__(self, name, npMaxH, completion_detection_mode="fast_path"):
+           super(MyMachine, self).__init__(
+               name,
+               npMaxH,
+               completion_detection_mode=completion_detection_mode,
+           )
+
 ReadyWorkSet
 ============
 
