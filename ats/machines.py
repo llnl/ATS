@@ -1,6 +1,7 @@
 """Definition of class Machine for overriding.
 """
-import subprocess, sys, os, time, shlex
+from collections import deque
+import selectors, subprocess, sys, os, threading, time, shlex
 from ats.atsut import RUNNING, TIMEDOUT, PASSED, FAILED, LSFERROR, \
      SKIPPED, HALTED, AtsError
 from ats.log import log, terminal
@@ -85,26 +86,57 @@ class MachineCore(object):
     def checkRunning(self):
         """Find those tests still running. getStatus checks for timeout.
         """
-        # print("DEBUG checkRunning 100\n")
-        from ats import configuration
-        time.sleep(self.naptime)
-        stillRunning = []
-        for test in self.running:
-            done = self.getStatus(test)
-            if not done:
-                stillRunning.append(test)
-            else:   # test has finished
-                if test.status is not PASSED:
-                    if configuration.options.oneFailure:
-                        raise AtsError("Test failed in oneFailure mode.")
-        self.running = stillRunning
+        completion_limit = self._completionFastPathDrainLimit()
+        if self._useLegacyCompletionPolling():
+            if self._pollRunningTests(
+                allow_running_checks=True,
+                completion_limit=completion_limit,
+            ):
+                return
+            time.sleep(self.naptime)
+            self._pollRunningTests(
+                allow_running_checks=True,
+                completion_limit=completion_limit,
+            )
+            return
+        if self._useQueuedCompletionDetection():
+            self._incrementCompletionStat("check_running_completion_queue_mode")
+            if self._pollQueuedCompletionTests(completion_limit=completion_limit):
+                self._incrementCompletionStat("check_running_queue_pre_drain_completed")
+                return
+            self._incrementCompletionStat("check_running_queue_pre_drain_empty")
+            self._incrementCompletionStat("check_running_wait_for_completion_signal")
+            self._waitForCompletionSignal()
+            if self._pollQueuedCompletionTests(completion_limit=completion_limit):
+                self._incrementCompletionStat("check_running_queue_post_wait_completed")
+                return
+            self._incrementCompletionStat("check_running_queue_post_wait_empty")
+            self._incrementCompletionStat("check_running_queue_fallback_poll_running")
+            self._pollRunningTests(
+                allow_running_checks=True,
+                completion_limit=completion_limit,
+            )
+            return
+        if self._pollRunningTests(
+            allow_running_checks=False,
+            completion_limit=completion_limit,
+        ):
+            return
+        completion_hints = self._waitForCompletionSignal()
+        if completion_hints and self._pollRunningTests(
+            allow_running_checks=False,
+            prioritized=completion_hints,
+            completion_limit=completion_limit,
+        ):
+            return
+        self._pollRunningTests(allow_running_checks=True)
 
     def remainingCapacity(self):
         """How many processors are free? Could be overriden to answer the real question,
            what is the largest job you could start at this time?"""
         return self.numberTestsRunningMax - self.numberTestsRunning
 
-    def getStatus(self, test):
+    def getStatus(self, test, allow_running_checks=True):
         """
         Override this only if not using subprocess (unusual).
         Obtains the exit code of the test object process and then sets
@@ -116,161 +148,590 @@ class MachineCore(object):
         testEnded will call your bookkeeping method noteEnd.
         """
         from ats import configuration
-        test.child.poll()
-        # print(f"This is the return code for the test:{test.child.returncode}")
-        if test.child.returncode is None:
-            overtime, fraction = self.checkForTimeOut(test)
-            #print "DEBUG getStatus 100"
-            #print overtime
-            #print fraction
-            #print "DEBUG getStatus 200"
-            if fraction > .9 or overtime != 0:
-                # If a process produces a lot of output, it may fill its output
-                # buffer and then block until something is read from it.
+        self._pollChild(test)
+        if test.child.returncode is not None:
+            return self._finishCompletedTest(test)
 
-                # How should testStdout handle this? ???
-                #
-                # 2017-08-15 SAD putting back in poll, to see if it fixes hang.
-                if configuration.SYS_TYPE.startswith('somesystemxxx'):
-                    stdoutdata, stderrdata = test.child.communicate()
+        if not allow_running_checks:
+            return False
 
-                # Now, poll it again.
-                test.child.poll()
+        overtime, fraction = self.checkForTimeOut(test)
+        if fraction > .9 or overtime != 0:
+            if configuration.SYS_TYPE.startswith('somesystemxxx'):
+                stdoutdata, stderrdata = test.child.communicate()
 
+            self._pollChild(test)
+            if test.child.returncode is not None:
+                return self._finishCompletedTest(test)
 
-        if test.child.returncode is None: #still running, but too long?
-            overtime, fraction = self.checkForTimeOut(test)
-            #print "DEBUG getStatus 300"
-            #print overtime
-            #print fraction
-            #print "DEBUG getStatus 400"
-            if overtime != 0:
-                self.kill(test)
-                test.statusCode = 2
-                test.setEndDateTime()
-                if overtime > 0:
-                    status = TIMEDOUT
-                else:
-                    status = HALTED  #one minute mode
-            else:
-                #print "DEBUG getStatus 320"
-                # SAD
-                # Coding to detect SLURM deficiencies, and abort job.
-                # Implemented 2016-Aug-30
-                slurm_error = False
-                f = open(test.errname, 'r', errors='replace')
-                lines = f.readlines()
-                f.close
-                for line in lines:
-                    if slurm_error == False:
-                        if "Slurmd could not set up environment for batch job" in line:
-                            print("ATS Halting test %s. Detected slurm launch failure : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "srun: error: Unable to create job step" in line:
-                            print("ATS Halting test %s. Detected slurm error : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "Error opening remote shared memory object in shm_open" in line:
-                            print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "PSM could not set up shared memory segment" in line:
-                            print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "Attempting to use an MPI routine before initializing MPICH" in line:
-                            print("ATS Halting test %s. Detected MPI Error : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "Bus error)" in line:
-                            print("ATS Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
-                            slurm_error = True
-
-                if slurm_error:
-                    self.kill(test)
-                    test.statusCode = 2
-                    test.setEndDateTime()
-                    status = HALTED
-
-                else:
-                    return False
-        else:
-            # print "DEBUG getStatus 400"
+        overtime, fraction = self.checkForTimeOut(test)
+        if overtime != 0:
+            self.kill(test)
+            test.statusCode = 2
             test.setEndDateTime()
-            test.statusCode = test.child.returncode
-            # If the user set ignoreReturnCode to True then set statusCode to 0.
-            ignoreReturnCode  = test.options.get('ignoreReturnCode', False)
-            if ignoreReturnCode:
-                test.statusCode = 0
-            if test.statusCode == 0:                               # process is done
-                status = PASSED
-            # This checks for flux timeouts since ATS' method for determining timeouts doesnt work with flux
-            elif "flux" in configuration.MACHINE_TYPE and test.statusCode == 142: # 142 is the return code for a timeout from flux
+            if overtime > 0:
                 status = TIMEDOUT
             else:
-                # Coding to detect LSF deficiencies
-                # Implemented 2018-12-12
-                lsf_error = False
-                f = open(test.errname, 'r', errors='replace')
+                status = HALTED
+            return self._completeTest(test, status)
+
+        if self._detectRunningSlurmError(test):
+            self.kill(test)
+            test.statusCode = 2
+            test.setEndDateTime()
+            return self._completeTest(test, HALTED)
+
+        return False
+
+    def _pollRunningTests(
+        self,
+        allow_running_checks,
+        prioritized=None,
+        stop_after_completion=False,
+        completion_limit=None,
+    ):
+        """Poll running tests, optionally prioritizing likely completions."""
+        from ats import configuration
+
+        start_us = time.time_ns() // 1000
+        self._incrementCompletionStat("_pollRunningTests_called")
+        if allow_running_checks:
+            self._incrementCompletionStat("_pollRunningTests_allow_running_checks_true")
+        else:
+            self._incrementCompletionStat("_pollRunningTests_allow_running_checks_false")
+
+        prioritized = list(prioritized or [])
+        prioritized_count = len(prioritized)
+        ordered_count = 0
+        completed = 0
+        result_kind = "completed_none"
+        try:
+            ordered = []
+            seen_ids = set()
+            for test in prioritized:
+                test_id = id(test)
+                if test_id in seen_ids:
+                    continue
+                ordered.append(test)
+                seen_ids.add(test_id)
+            for test in self.running:
+                test_id = id(test)
+                if test_id in seen_ids:
+                    continue
+                ordered.append(test)
+                seen_ids.add(test_id)
+
+            ordered_count = len(ordered)
+            self._incrementCompletionStat("_pollRunningTests_total_ordered", ordered_count)
+
+            remaining = []
+            for index, test in enumerate(ordered):
+                done = self.getStatus(test, allow_running_checks=allow_running_checks)
+                if not done:
+                    remaining.append(test)
+                    continue
+                completed += 1
+                if test.status is not PASSED and configuration.options.oneFailure:
+                    raise AtsError("Test failed in oneFailure mode.")
+                if stop_after_completion or (
+                    completion_limit is not None and completed >= completion_limit
+                ):
+                    remaining.extend(ordered[index + 1:])
+                    self._preserve_new_running_tests(remaining, seen_ids)
+                    self.running = remaining
+                    result_kind = "stopped_after_completion"
+                    self._incrementCompletionStat("_pollRunningTests_stopped_after_completion")
+                    self._incrementCompletionStat("_pollRunningTests_total_completed", completed)
+                    return completed
+
+            self._preserve_new_running_tests(remaining, seen_ids)
+            self.running = remaining
+            self._incrementCompletionStat("_pollRunningTests_total_completed", completed)
+            if completed:
+                result_kind = "completed"
+                self._incrementCompletionStat("_pollRunningTests_completed")
+            else:
+                self._incrementCompletionStat("_pollRunningTests_completed_none")
+            return completed
+        finally:
+            self._recordCompletionInternalSpan(
+                "_pollRunningTests",
+                start_us,
+                time.time_ns() // 1000,
+                metadata={
+                    "mode": getattr(self, "completion_detection_mode", ""),
+                    "allow_running_checks": bool(allow_running_checks),
+                    "prioritized_count": prioritized_count,
+                    "ordered_count": ordered_count,
+                    "stop_after_completion": bool(stop_after_completion),
+                    "completion_limit": completion_limit,
+                    "completed_count": completed,
+                    "result": result_kind,
+                },
+            )
+
+    def _preserve_new_running_tests(self, remaining, seen_ids):
+        """Keep tests appended to ``self.running`` during completion callbacks."""
+        remaining_ids = {id(test) for test in remaining}
+        for test in self.running:
+            test_id = id(test)
+            if test_id in seen_ids or test_id in remaining_ids:
+                continue
+            remaining.append(test)
+            remaining_ids.add(test_id)
+
+    def _waitForCompletionSignal(self):
+        """Wait for a local child exit, using pidfds when available."""
+        start_us = time.time_ns() // 1000
+        self._incrementCompletionStat("_waitForCompletionSignal_called")
+        registered = False
+        registered_count = 0
+        ready = []
+        selector = None
+        used_queue_event_wait = False
+        result_kind = "sleep_fallback"
+        try:
+            selector = selectors.DefaultSelector()
+        except Exception:
+            selector = None
+
+        try:
+            if selector is not None:
+                try:
+                    for test in self.running:
+                        pidfd = self._ensurePidfd(test)
+                        if pidfd is None:
+                            continue
+                        try:
+                            selector.register(pidfd, selectors.EVENT_READ, test)
+                            registered = True
+                            registered_count += 1
+                        except Exception:
+                            self._closePidfd(test)
+                    if registered:
+                        self._incrementCompletionStat("_waitForCompletionSignal_pidfd_registered")
+                        ready = [key.data for key, _mask in selector.select(self.naptime)]
+                        if ready:
+                            result_kind = "pidfd_ready"
+                            self._incrementCompletionStat("_waitForCompletionSignal_pidfd_ready")
+                            self._incrementCompletionStat("_waitForCompletionSignal_total_ready", len(ready))
+                            for test in ready:
+                                self._recordCompletionSignal(test)
+                        else:
+                            result_kind = "pidfd_timeout"
+                            self._incrementCompletionStat("_waitForCompletionSignal_pidfd_timeout")
+                finally:
+                    selector.close()
+
+            if registered:
+                return ready
+
+            if self._useQueuedCompletionDetection():
+                used_queue_event_wait = True
+                result_kind = "queue_event_wait"
+                self._incrementCompletionStat("_waitForCompletionSignal_queue_event_wait")
+                self._completionEvent.wait(self.naptime)
+                return []
+
+            self._incrementCompletionStat("_waitForCompletionSignal_sleep_fallback")
+            time.sleep(self.naptime)
+            return []
+        finally:
+            self._recordCompletionInternalSpan(
+                "_waitForCompletionSignal",
+                start_us,
+                time.time_ns() // 1000,
+                metadata={
+                    "mode": getattr(self, "completion_detection_mode", ""),
+                    "running_count": len(self.running),
+                    "registered": bool(registered),
+                    "registered_count": registered_count,
+                    "ready_count": len(ready),
+                    "used_queue_event_wait": bool(used_queue_event_wait),
+                    "result": result_kind,
+                },
+            )
+
+    def _useLegacyCompletionPolling(self):
+        mode = str(getattr(self, "completion_detection_mode", "") or "").strip().lower()
+        return mode == "legacy_poll"
+
+    def _useQueuedCompletionDetection(self):
+        mode = str(getattr(self, "completion_detection_mode", "") or "").strip().lower()
+        return mode == "completion_queue"
+
+    def _completionStatsEnabled(self):
+        return bool(getattr(self, "completion_detection_stats", False))
+
+    def _completionSpansEnabled(self):
+        return bool(getattr(self, "completion_detection_spans", False))
+
+    def _incrementCompletionStat(self, name, amount=1):
+        if not self._completionStatsEnabled():
+            return
+        with self._completionStatsLock:
+            self._completionStats[name] = self._completionStats.get(name, 0) + amount
+
+    def _completionStatsSnapshot(self):
+        with self._completionStatsLock:
+            return dict(self._completionStats)
+
+    def _addMachineHook(self, hook_attr, callback, description):
+        if not callable(callback):
+            raise AtsError("%s hook must be callable" % description)
+        hooks = getattr(self, hook_attr, None)
+        if hooks is None:
+            hooks = []
+            setattr(self, hook_attr, hooks)
+        hooks.append(callback)
+        return callback
+
+    def _removeMachineHook(self, hook_attr, callback):
+        hooks = getattr(self, hook_attr, None)
+        if hooks is None:
+            return
+        try:
+            hooks.remove(callback)
+        except ValueError:
+            pass
+
+    def add_completion_span_hook(self, callback):
+        """Register a callback for internal completion-detection timing spans."""
+        return self._addMachineHook(
+            "_completion_span_hooks",
+            callback,
+            "completion span",
+        )
+
+    def remove_completion_span_hook(self, callback):
+        """Unregister a completion span callback."""
+        self._removeMachineHook("_completion_span_hooks", callback)
+
+    def add_completion_queue_snapshot_hook(self, callback):
+        """Register a callback for completion queue depth snapshots."""
+        return self._addMachineHook(
+            "_completion_queue_snapshot_hooks",
+            callback,
+            "completion queue snapshot",
+        )
+
+    def remove_completion_queue_snapshot_hook(self, callback):
+        """Unregister a completion queue snapshot callback."""
+        self._removeMachineHook("_completion_queue_snapshot_hooks", callback)
+
+    def _recordCompletionInternalSpan(self, name, start_us, end_us, metadata=None):
+        if not self._completionSpansEnabled():
+            return
+        for callback in list(getattr(self, "_completion_span_hooks", [])):
+            callback(name, start_us, end_us, metadata or {})
+
+    def _recordCompletionQueueSnapshot(self, depth, reason, timestamp_us=None, metadata=None):
+        if timestamp_us is None:
+            timestamp_us = time.time_ns() // 1000
+        depth = max(0, int(depth))
+        if self._completionStatsEnabled():
+            with self._completionStatsLock:
+                self._completionStats["completion_queue_depth_latest"] = depth
+                peak = int(self._completionStats.get("completion_queue_depth_peak", 0))
+                if depth > peak:
+                    self._completionStats["completion_queue_depth_peak"] = depth
+        payload = {
+            "completion_queue_depth": depth,
+            "reason": reason,
+        }
+        if metadata:
+            payload.update(metadata)
+        for callback in list(getattr(self, "_completion_queue_snapshot_hooks", [])):
+            callback(timestamp_us, payload)
+
+    def _completionFastPathDrainLimit(self):
+        limit = getattr(self, "completion_fast_path_drain_limit", 128)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 128
+        return max(1, limit)
+
+    def _pollChild(self, test):
+        test.child.poll()
+        return test.child.returncode
+
+    def _recordCompletionSignal(self, test, observed_us=None):
+        if observed_us is None:
+            observed_us = time.time_ns() // 1000
+        if getattr(test, "ats_completion_signal_us", None) is None:
+            test.ats_completion_signal_us = observed_us
+            self._incrementCompletionStat("completion_signal_recorded")
+        if not self._useQueuedCompletionDetection():
+            return
+        with self._completionQueueLock:
+            test_id = id(test)
+            if test_id in self._completionQueueIds:
+                self._incrementCompletionStat("completion_queue_duplicate_signal")
+                return
+            self._completionQueue.append(test)
+            self._completionQueueIds.add(test_id)
+            self._completionEvent.set()
+            self._incrementCompletionStat("completion_queue_enqueued")
+            depth = len(self._completionQueue)
+        self._recordCompletionQueueSnapshot(
+            depth,
+            "completion_queue_enqueue",
+            timestamp_us=observed_us,
+        )
+
+    def _drainCompletionQueue(self, completion_limit=None):
+        queued = []
+        with self._completionQueueLock:
+            while self._completionQueue:
+                if completion_limit is not None and len(queued) >= completion_limit:
+                    break
+                test = self._completionQueue.popleft()
+                self._completionQueueIds.discard(id(test))
+                queued.append(test)
+            remaining_depth = len(self._completionQueue)
+            if not self._completionQueue:
+                self._completionEvent.clear()
+        if queued:
+            self._recordCompletionQueueSnapshot(
+                remaining_depth,
+                "completion_queue_drain",
+                metadata={
+                    "drained_count": len(queued),
+                    "completion_limit": completion_limit,
+                },
+            )
+        return queued
+
+    def _pollQueuedCompletionTests(self, completion_limit=None):
+        from ats import configuration
+
+        start_us = time.time_ns() // 1000
+        self._incrementCompletionStat("_pollQueuedCompletionTests_called")
+        queued_count = 0
+        selected_count = 0
+        stale_count = 0
+        completed = 0
+        result_kind = "empty"
+        try:
+            queued = self._drainCompletionQueue(completion_limit=completion_limit)
+            queued_count = len(queued)
+            self._incrementCompletionStat("_pollQueuedCompletionTests_total_queued", queued_count)
+            if not queued:
+                self._incrementCompletionStat("_pollQueuedCompletionTests_empty")
+                return 0
+
+            selected = []
+            selected_ids = set()
+            running_ids = {id(test) for test in self.running}
+            for test in queued:
+                test_id = id(test)
+                if test_id in selected_ids:
+                    continue
+                if test_id not in running_ids:
+                    stale_count += 1
+                    continue
+                selected.append(test)
+                selected_ids.add(test_id)
+
+            selected_count = len(selected)
+            self._incrementCompletionStat("_pollQueuedCompletionTests_total_selected", selected_count)
+            self._incrementCompletionStat("_pollQueuedCompletionTests_total_stale", stale_count)
+            if stale_count:
+                self._incrementCompletionStat("_pollQueuedCompletionTests_saw_stale_entries")
+            if not selected:
+                result_kind = "stale_only"
+                self._incrementCompletionStat("_pollQueuedCompletionTests_selected_none")
+                return 0
+
+            completed_ids = set()
+            for test in selected:
+                done = self.getStatus(test, allow_running_checks=False)
+                if not done:
+                    continue
+                completed_ids.add(id(test))
+                completed += 1
+                if test.status is not PASSED and configuration.options.oneFailure:
+                    raise AtsError("Test failed in oneFailure mode.")
+
+            self._incrementCompletionStat("_pollQueuedCompletionTests_total_completed", completed)
+            if completed_ids:
+                self.running = [
+                    test for test in self.running if id(test) not in completed_ids
+                ]
+                result_kind = "completed"
+                self._incrementCompletionStat("_pollQueuedCompletionTests_completed")
+            else:
+                result_kind = "selected_none_completed"
+                self._incrementCompletionStat("_pollQueuedCompletionTests_selected_none_completed")
+            return completed
+        finally:
+            self._recordCompletionInternalSpan(
+                "_pollQueuedCompletionTests",
+                start_us,
+                time.time_ns() // 1000,
+                metadata={
+                    "mode": getattr(self, "completion_detection_mode", ""),
+                    "completion_limit": completion_limit,
+                    "queued_count": queued_count,
+                    "selected_count": selected_count,
+                    "stale_count": stale_count,
+                    "completed_count": completed,
+                    "result": result_kind,
+                },
+            )
+
+    def _finishCompletedTest(self, test):
+        from ats import configuration
+
+        if getattr(test, "ats_returncode_observed_us", None) is None:
+            test.ats_returncode_observed_us = time.time_ns() // 1000
+        test.setEndDateTime()
+        test.statusCode = test.child.returncode
+        ignoreReturnCode  = test.options.get('ignoreReturnCode', False)
+        if ignoreReturnCode:
+            test.statusCode = 0
+        if test.statusCode == 0:
+            status = PASSED
+        elif "flux" in configuration.MACHINE_TYPE and test.statusCode == 142:
+            status = TIMEDOUT
+        else:
+            lsf_error = False
+            with open(test.errname, 'r', errors='replace') as f:
                 lines = f.readlines()
-                f.close
+            for line in lines:
+                if lsf_error == False:
+                    if "Terminated while pending" in line:
+                        print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
+                        lsf_error = True
+                    elif "JSM daemon timed" in line:
+                        print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
+                        lsf_error = True
+                    elif "Error initializing RM" in line:
+                        print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
+                        lsf_error = True
+                    elif "Bus error)" in line:
+                        print("ATS ERROR: Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
+                        lsf_error = True
+
+            if not lsf_error:
+                with open(test.outname, 'r', errors='replace') as f:
+                    lines = f.readlines()
                 for line in lines:
                     if lsf_error == False:
-                        if "Terminated while pending" in line:
+                        if "ATS Error: Locate pipe file" in line:
                             print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
                             lsf_error = True
-                        elif "JSM daemon timed" in line:
+                        elif "Could not read jskill" in line:
+                            print("ATS ERROR: Detected LSF Job Scheduler Error %s.  : %s " % (test.name, line))
+                            lsf_error = True
+                        elif "AST Error: initializing RM" in line:
                             print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
                             lsf_error = True
-                            #time.sleep(10)      # See if sleeiping helps the JSM daemon recover
-                        elif "Error initializing RM" in line:
-                            print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
-                            lsf_error = True
-                            #time.sleep(10)      # See if sleeiping helps the JSM daemon recover
-                        elif "Bus error)" in line:
-                            print("ATS ERROR: Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
-                            lsf_error = True
 
-                if not lsf_error:
-                    f = open(test.outname, 'r', errors='replace')
-                    lines = f.readlines()
-                    f.close
-                    for line in lines:
-                        if lsf_error == False:
-                            if "ATS Error: Locate pipe file" in line:
-                                print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
-                                lsf_error = True
-                            elif "Could not read jskill" in line:
-                                print("ATS ERROR: Detected LSF Job Scheduler Error %s.  : %s " % (test.name, line))
-                                lsf_error = True
-                            elif "AST Error: initializing RM" in line:
-                                print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
-                                lsf_error = True
+            if lsf_error:
+                print("ATS LSF Development: LSFE Detected statusCode is %d " % test.statusCode)
+                test.statusCode = 2
+                test.setEndDateTime()
+                status = LSFERROR
+            else:
+                status = FAILED
 
+        return self._completeTest(test, status)
 
-                #sys.exit(-1) SAD ambyr
-                #print "DEBUG getStatus 420 statusCode is %d " % test.statusCode
-                if lsf_error:
-                    print("ATS LSF Development: LSFE Detected statusCode is %d " % test.statusCode)
-                    test.statusCode = 2
-                    test.setEndDateTime()
-                    status = LSFERROR
-
-                else:
-                    status = FAILED
-
-
-        # Send test's stdout/stderr to file and to terminal
+    def _completeTest(self, test, status):
         if test.stdOutLocGet() == 'both':
             outhandle, errhandle = test.fileHandleGet()
             for line in test.child.stdout:
                 print(line)
                 print(line, file=outhandle)
 
+        self._closePidfd(test)
         self.testEnded(test, status)
-
-        #if hasattr(test, 'runningWithinSalloc'):
-        #    if test.runningWithinSalloc == True:
-        #        print "DEBUG Sleeping 1 sec after job end %s" % test.name
-        #        time.sleep(1)
-
         return True
+
+    def _detectRunningSlurmError(self, test):
+        with open(test.errname, 'r', errors='replace') as f:
+            lines = f.readlines()
+        for line in lines:
+            if "Slurmd could not set up environment for batch job" in line:
+                print("ATS Halting test %s. Detected slurm launch failure : %s " % (test.name, line))
+                return True
+            elif "srun: error: Unable to create job step" in line:
+                print("ATS Halting test %s. Detected slurm error : %s " % (test.name, line))
+                return True
+            elif "Error opening remote shared memory object in shm_open" in line:
+                print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
+                return True
+            elif "PSM could not set up shared memory segment" in line:
+                print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
+                return True
+            elif "Attempting to use an MPI routine before initializing MPICH" in line:
+                print("ATS Halting test %s. Detected MPI Error : %s " % (test.name, line))
+                return True
+            elif "Bus error)" in line:
+                print("ATS Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
+                return True
+        return False
+
+    def _ensurePidfd(self, test):
+        if getattr(self, "_pidfdUnavailable", False):
+            self._ensureCompletionWatcher(test)
+            return None
+        pidfd = getattr(test, "_pidfd", None)
+        if pidfd is not None:
+            return pidfd
+        if not hasattr(os, "pidfd_open"):
+            self._pidfdUnavailable = True
+            self._ensureCompletionWatcher(test)
+            return None
+        child = getattr(test, "child", None)
+        if child is None or getattr(child, "pid", None) is None:
+            return None
+        try:
+            pidfd = os.pidfd_open(child.pid)
+        except OSError:
+            self._ensureCompletionWatcher(test)
+            return None
+        except AttributeError:
+            self._pidfdUnavailable = True
+            self._ensureCompletionWatcher(test)
+            return None
+        test._pidfd = pidfd
+        return pidfd
+
+    def _ensureCompletionWatcher(self, test):
+        child = getattr(test, "child", None)
+        if child is None:
+            return
+        watcher = getattr(test, "_completionWatcher", None)
+        if watcher is not None:
+            return
+
+        def _watch_for_completion():
+            try:
+                child.wait()
+            except Exception:
+                return
+            self._recordCompletionSignal(test)
+
+        watcher = threading.Thread(
+            target=_watch_for_completion,
+            name=f"ats-completion-{getattr(child, 'pid', 'unknown')}",
+            daemon=True,
+        )
+        test._completionWatcher = watcher
+        watcher.start()
+
+    def _closePidfd(self, test):
+        pidfd = getattr(test, "_pidfd", None)
+        if pidfd is None:
+            return
+        try:
+            os.close(pidfd)
+        except OSError:
+            pass
+        test._pidfd = None
 
     def testEnded(self, test, status):
         """Do book-keeping when a job has exited;
@@ -336,6 +797,7 @@ class MachineCore(object):
         "Kill the job running test."
         if test.child:
             test.child.kill()
+            self._closePidfd(test)
             if test.stdOutLocGet() != 'terminal':
                 test.fileHandleClose()
 
@@ -660,6 +1122,7 @@ The subprocess part of launch. Also the part that might fail.
                 else:
                     test.child = subprocess.Popen(test.commandList, cwd=test.directory, stdout = subprocess.PIPE, stderr=subprocess.STDOUT, env=E, stdin=testStdin)
 
+            self._ensurePidfd(test)
             test.set(RUNNING, test.commandLine)
 
             self.running.append(test)
@@ -816,6 +1279,14 @@ is hard upper limit.
         self.hardLimit = (npMaxH > 0)
         self.naptime = 0.2 #number of seconds to sleep between checks on running tests.
         self.running = []
+        self._completionEvent = threading.Event()
+        self._completionQueue = deque()
+        self._completionQueueIds = set()
+        self._completionQueueLock = threading.Lock()
+        self._completionStats = {}
+        self._completionStatsLock = threading.Lock()
+        self._completion_span_hooks = []
+        self._completion_queue_snapshot_hooks = []
         self.runOrder = 0
         from ats import schedulers
         self.scheduler = schedulers.StandardScheduler()
