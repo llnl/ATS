@@ -176,7 +176,12 @@ class FluxScheduled(lcMachines.LCMachineCore):
         return nodes[rel_index]
 
     def getNumberOfProcessors(self):
-        """Return total schedulable processor slots in the Flux allocation."""
+        """Return total schedulable processor slots in the Flux allocation.
+
+        Returns:
+            int: Total processor capacity ATS may schedule inside the current
+            Flux allocation.
+        """
         return self.maxCores
 
 

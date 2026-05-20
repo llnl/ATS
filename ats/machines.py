@@ -84,7 +84,11 @@ class MachineCore(object):
         return 0, fraction
 
     def checkRunning(self):
-        """Find those tests still running. getStatus checks for timeout.
+        """Update ``self.running`` after checking for finished child processes.
+
+        Returns:
+            None: ``self.running`` is rewritten in place and completion
+            callbacks may run for newly finished tests.
         """
         completion_limit = self._completionFastPathDrainLimit()
         if self._useLegacyCompletionPolling():
@@ -142,10 +146,19 @@ class MachineCore(object):
         Obtains the exit code of the test object process and then sets
         the status of the test object accordingly. Returns True if test done.
 
+        Args:
+            test: ATS test object whose child status should be checked.
+            allow_running_checks (bool): When ``False``, skip timeout and
+                running-error detection for children that have not yet exited.
+
         When a test has completed you must set test.statusCode and
         call self.testEnded(test, status). You may add a message as a third arg,
         which will be shown in the test's final report.
         testEnded will call your bookkeeping method noteEnd.
+
+        Returns:
+            bool: ``True`` when completion handling ran for ``test``, else
+            ``False`` while the child remains running.
         """
         from ats import configuration
         self._pollChild(test)
@@ -190,7 +203,21 @@ class MachineCore(object):
         stop_after_completion=False,
         completion_limit=None,
     ):
-        """Poll running tests, optionally prioritizing likely completions."""
+        """Poll running tests, optionally prioritizing likely completions.
+
+        Args:
+            allow_running_checks (bool): When ``False``, skip timeout and
+                runtime error checks for children that have not yet exited.
+            prioritized (iterable|None): Optional running-test candidates to
+                check before the rest of ``self.running``.
+            stop_after_completion (bool): If ``True``, stop after the first
+                completed test is handled.
+            completion_limit (int|None): Maximum number of completions to
+                process before returning control to the scheduler.
+
+        Returns:
+            int: Number of completed tests processed in this polling pass.
+        """
         from ats import configuration
 
         start_us = time.time_ns() // 1000
@@ -271,7 +298,16 @@ class MachineCore(object):
             )
 
     def _preserve_new_running_tests(self, remaining, seen_ids):
-        """Keep tests appended to ``self.running`` during completion callbacks."""
+        """Keep tests appended to ``self.running`` during completion callbacks.
+
+        Args:
+            remaining (list): Running tests that should remain after the current
+                polling pass.
+            seen_ids (set): Object ids already considered in the polling pass.
+
+        Returns:
+            None: ``remaining`` is updated in place.
+        """
         remaining_ids = {id(test) for test in remaining}
         for test in self.running:
             test_id = id(test)
@@ -281,7 +317,13 @@ class MachineCore(object):
             remaining_ids.add(test_id)
 
     def _waitForCompletionSignal(self):
-        """Wait for a local child exit, using pidfds when available."""
+        """Wait for a local child exit, using pidfds when available.
+
+        Returns:
+            list: Running tests that were signaled as likely completed during
+            this wait interval. Queue-wait and sleep-fallback paths return an
+            empty list.
+        """
         start_us = time.time_ns() // 1000
         self._incrementCompletionStat("_waitForCompletionSignal_called")
         registered = False
@@ -353,30 +395,77 @@ class MachineCore(object):
             )
 
     def _useLegacyCompletionPolling(self):
+        """Return whether legacy double-poll completion detection is enabled.
+
+        Returns:
+            bool: ``True`` when ``completion_detection_mode`` is
+            ``"legacy_poll"``.
+        """
         mode = str(getattr(self, "completion_detection_mode", "") or "").strip().lower()
         return mode == "legacy_poll"
 
     def _useQueuedCompletionDetection(self):
+        """Return whether queued completion detection is enabled.
+
+        Returns:
+            bool: ``True`` when ``completion_detection_mode`` is
+            ``"completion_queue"``.
+        """
         mode = str(getattr(self, "completion_detection_mode", "") or "").strip().lower()
         return mode == "completion_queue"
 
     def _completionStatsEnabled(self):
+        """Return whether aggregated completion counters should be tracked.
+
+        Returns:
+            bool: ``True`` when completion statistics are enabled.
+        """
         return bool(getattr(self, "completion_detection_stats", False))
 
     def _completionSpansEnabled(self):
+        """Return whether internal completion spans should be emitted.
+
+        Returns:
+            bool: ``True`` when completion span hooks are enabled.
+        """
         return bool(getattr(self, "completion_detection_spans", False))
 
     def _incrementCompletionStat(self, name, amount=1):
+        """Increment one aggregated completion counter.
+
+        Args:
+            name (str): Counter key to increment.
+            amount (int): Value added to the counter.
+
+        Returns:
+            None: The in-memory stats dictionary is updated when enabled.
+        """
         if not self._completionStatsEnabled():
             return
         with self._completionStatsLock:
             self._completionStats[name] = self._completionStats.get(name, 0) + amount
 
     def _completionStatsSnapshot(self):
+        """Return a copy of the current completion statistics.
+
+        Returns:
+            dict: Snapshot of aggregated completion counters.
+        """
         with self._completionStatsLock:
             return dict(self._completionStats)
 
     def _addMachineHook(self, hook_attr, callback, description):
+        """Register a machine hook callback on one hook list.
+
+        Args:
+            hook_attr (str): Attribute name holding the callback list.
+            callback (callable): Hook function to register.
+            description (str): Human-readable hook name used in validation
+                errors.
+
+        Returns:
+            callable: The registered callback.
+        """
         if not callable(callback):
             raise AtsError("%s hook must be callable" % description)
         hooks = getattr(self, hook_attr, None)
@@ -387,6 +476,15 @@ class MachineCore(object):
         return callback
 
     def _removeMachineHook(self, hook_attr, callback):
+        """Remove a callback from one machine hook list if present.
+
+        Args:
+            hook_attr (str): Attribute name holding the callback list.
+            callback (callable): Hook function to remove.
+
+        Returns:
+            None: Missing callbacks are ignored.
+        """
         hooks = getattr(self, hook_attr, None)
         if hooks is None:
             return
@@ -396,7 +494,15 @@ class MachineCore(object):
             pass
 
     def add_completion_span_hook(self, callback):
-        """Register a callback for internal completion-detection timing spans."""
+        """Register a callback for internal completion-detection timing spans.
+
+        Args:
+            callback (callable): Function called as
+                ``callback(name, start_us, end_us, metadata)``.
+
+        Returns:
+            callable: The registered callback.
+        """
         return self._addMachineHook(
             "_completion_span_hooks",
             callback,
@@ -404,11 +510,26 @@ class MachineCore(object):
         )
 
     def remove_completion_span_hook(self, callback):
-        """Unregister a completion span callback."""
+        """Unregister a completion span callback.
+
+        Args:
+            callback (callable): Previously registered completion span hook.
+
+        Returns:
+            None: Missing callbacks are ignored.
+        """
         self._removeMachineHook("_completion_span_hooks", callback)
 
     def add_completion_queue_snapshot_hook(self, callback):
-        """Register a callback for completion queue depth snapshots."""
+        """Register a callback for completion queue depth snapshots.
+
+        Args:
+            callback (callable): Function called as
+                ``callback(timestamp_us, metadata)``.
+
+        Returns:
+            callable: The registered callback.
+        """
         return self._addMachineHook(
             "_completion_queue_snapshot_hooks",
             callback,
@@ -416,16 +537,46 @@ class MachineCore(object):
         )
 
     def remove_completion_queue_snapshot_hook(self, callback):
-        """Unregister a completion queue snapshot callback."""
+        """Unregister a completion queue snapshot callback.
+
+        Args:
+            callback (callable): Previously registered queue snapshot hook.
+
+        Returns:
+            None: Missing callbacks are ignored.
+        """
         self._removeMachineHook("_completion_queue_snapshot_hooks", callback)
 
     def _recordCompletionInternalSpan(self, name, start_us, end_us, metadata=None):
+        """Emit one internal completion-detection timing span.
+
+        Args:
+            name (str): Span name.
+            start_us (int): Inclusive start timestamp in microseconds.
+            end_us (int): End timestamp in microseconds.
+            metadata (dict|None): Optional structured span metadata.
+
+        Returns:
+            None: Registered hooks are called when enabled.
+        """
         if not self._completionSpansEnabled():
             return
         for callback in list(getattr(self, "_completion_span_hooks", [])):
             callback(name, start_us, end_us, metadata or {})
 
     def _recordCompletionQueueSnapshot(self, depth, reason, timestamp_us=None, metadata=None):
+        """Emit one completion-queue depth snapshot and update queue stats.
+
+        Args:
+            depth (int): Queue depth after the observed event.
+            reason (str): Short reason label for the snapshot.
+            timestamp_us (int|None): Event timestamp in microseconds. Uses the
+                current time when omitted.
+            metadata (dict|None): Optional extra snapshot metadata.
+
+        Returns:
+            None: Registered hooks are called when present.
+        """
         if timestamp_us is None:
             timestamp_us = time.time_ns() // 1000
         depth = max(0, int(depth))
@@ -445,6 +596,11 @@ class MachineCore(object):
             callback(timestamp_us, payload)
 
     def _completionFastPathDrainLimit(self):
+        """Return the configured maximum completions drained per wakeup.
+
+        Returns:
+            int: Positive completion drain limit.
+        """
         limit = getattr(self, "completion_fast_path_drain_limit", 128)
         try:
             limit = int(limit)
@@ -453,10 +609,28 @@ class MachineCore(object):
         return max(1, limit)
 
     def _pollChild(self, test):
+        """Poll one child process and return its current return code.
+
+        Args:
+            test: ATS test object whose ``child`` process should be polled.
+
+        Returns:
+            int|None: Child return code, or ``None`` while still running.
+        """
         test.child.poll()
         return test.child.returncode
 
     def _recordCompletionSignal(self, test, observed_us=None):
+        """Record a likely completion signal for one running test.
+
+        Args:
+            test: ATS test object associated with the completion signal.
+            observed_us (int|None): Signal timestamp in microseconds. Uses the
+                current time when omitted.
+
+        Returns:
+            None: Internal timestamps, queue state, and statistics are updated.
+        """
         if observed_us is None:
             observed_us = time.time_ns() // 1000
         if getattr(test, "ats_completion_signal_us", None) is None:
@@ -481,6 +655,15 @@ class MachineCore(object):
         )
 
     def _drainCompletionQueue(self, completion_limit=None):
+        """Remove queued completion candidates up to the configured limit.
+
+        Args:
+            completion_limit (int|None): Maximum number of queued tests to
+                return. ``None`` drains the entire queue.
+
+        Returns:
+            list: Queued tests selected for completion re-checking.
+        """
         queued = []
         with self._completionQueueLock:
             while self._completionQueue:
@@ -504,6 +687,15 @@ class MachineCore(object):
         return queued
 
     def _pollQueuedCompletionTests(self, completion_limit=None):
+        """Handle completion candidates from the queued completion path.
+
+        Args:
+            completion_limit (int|None): Maximum number of queued candidates to
+                process in this pass.
+
+        Returns:
+            int: Number of running tests confirmed completed in this pass.
+        """
         from ats import configuration
 
         start_us = time.time_ns() // 1000
@@ -582,6 +774,14 @@ class MachineCore(object):
             )
 
     def _finishCompletedTest(self, test):
+        """Finalize status selection for a child that has already exited.
+
+        Args:
+            test: ATS test object whose child return code is available.
+
+        Returns:
+            bool: ``True`` after the completion has been fully handled.
+        """
         from ats import configuration
 
         if getattr(test, "ats_returncode_observed_us", None) is None:
@@ -640,6 +840,15 @@ class MachineCore(object):
         return self._completeTest(test, status)
 
     def _completeTest(self, test, status):
+        """Run completion bookkeeping for a finished test.
+
+        Args:
+            test: ATS test object that has finished.
+            status: ATS status object chosen for the finished test.
+
+        Returns:
+            bool: Always ``True`` after completion handling runs.
+        """
         if test.stdOutLocGet() == 'both':
             outhandle, errhandle = test.fileHandleGet()
             for line in test.child.stdout:
@@ -651,6 +860,14 @@ class MachineCore(object):
         return True
 
     def _detectRunningSlurmError(self, test):
+        """Check a still-running test for known SLURM launch/runtime failures.
+
+        Args:
+            test: ATS test object whose stderr should be inspected.
+
+        Returns:
+            bool: ``True`` when a known SLURM-related fatal error was found.
+        """
         with open(test.errname, 'r', errors='replace') as f:
             lines = f.readlines()
         for line in lines:
@@ -675,6 +892,15 @@ class MachineCore(object):
         return False
 
     def _ensurePidfd(self, test):
+        """Return or create a pidfd for one running child when supported.
+
+        Args:
+            test: ATS test object whose child process should be observed.
+
+        Returns:
+            int|None: Open pidfd file descriptor, or ``None`` when pidfds are
+            unavailable and ATS must use the watcher fallback.
+        """
         if getattr(self, "_pidfdUnavailable", False):
             self._ensureCompletionWatcher(test)
             return None
@@ -701,6 +927,15 @@ class MachineCore(object):
         return pidfd
 
     def _ensureCompletionWatcher(self, test):
+        """Start the watcher-thread fallback for completion signaling.
+
+        Args:
+            test: ATS test object whose child should be watched with
+                ``child.wait()``.
+
+        Returns:
+            None: A daemon watcher thread is created at most once per test.
+        """
         child = getattr(test, "child", None)
         if child is None:
             return
@@ -724,6 +959,14 @@ class MachineCore(object):
         watcher.start()
 
     def _closePidfd(self, test):
+        """Close a pidfd associated with one test if it exists.
+
+        Args:
+            test: ATS test object that may own ``_pidfd``.
+
+        Returns:
+            None: Missing or already-closed pidfds are ignored.
+        """
         pidfd = getattr(test, "_pidfd", None)
         if pidfd is None:
             return
