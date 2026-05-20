@@ -323,7 +323,8 @@ class AtsManager(object):
             pass
 
     def test_defined(self, test_definition):
-        """Publish one completed test definition to streaming-discovery hooks.
+        """Using hook(s) previously registered through add_test_defined_hook, notifies
+           the driver that a test definition has been added.
 
         Args:
             test_definition (object): Completed ATS test, iterable of ATS tests,
