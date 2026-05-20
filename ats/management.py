@@ -854,7 +854,7 @@ class AtsManager(object):
             None.  Exits the process with an ATS error banner when the current
             machine/options combination is not allowed.
         """
-        if configuration.SYS_TYPE == "toss_4_x86_64":
+        if configuration.SYS_TYPE == "toss_3_x86_64":
             if configuration.options.bypassSerialMachineCheck == False:
                 log("**********************************************************************************", echo=True)
                 log("*** This is a serial machine --- Do not use ATS on more than 1 node here!      ***", echo=True)
