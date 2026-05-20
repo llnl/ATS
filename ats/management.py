@@ -1277,8 +1277,9 @@ class AtsManager(object):
                 ``atsGroup`` attribute.
 
         Returns:
-            list: ATS tests extracted from ``test_definition``.  Unknown objects
-            and strings return an empty list.
+            list: ATS tests extracted from ``test_definition``.  Unknown
+            objects return an empty list; strings are explicitly ignored so
+            they are not treated as iterables of tests.
         """
         if test_definition is None:
             return []
