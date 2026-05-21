@@ -54,15 +54,15 @@ Completion Detectors
 
 ATS machines delegate running-test completion policy to a completion detector.
 The detector keeps strategy choice out of ``MachineCore.checkRunning()`` while
-reusing the same machine-owned helpers for pidfds, watcher threads, completion
-queues, and aggregated completion statistics.
+reusing the same machine-owned helpers for completion queues, polling, and
+aggregated completion statistics.
 
 ATS ships two detector types:
 
 * ``ats.completion_queue.CompletionQueueCompletionDetector`` records signaled
   completions into a queue and drains only those tests before falling back;
 * ``ats.completion_legacy_poll.LegacyPollCompletionDetector`` preserves the
-  historical double-poll-with-sleep behavior.
+  plain sleep-then-poll behavior from the ``ale3d`` ATS branch.
 
 The ATS initialization path accepts ``completion_detection_mode`` and passes it
 through machine construction:

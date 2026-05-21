@@ -166,9 +166,13 @@ class MachineCore(object):
 
         overtime, fraction = self.checkForTimeOut(test)
         if fraction > .9 or overtime != 0:
+            # If a process produces a lot of output, it may fill its output
+            # buffer and then block until something is read from it.
             if configuration.SYS_TYPE.startswith('somesystemxxx'):
                 stdoutdata, stderrdata = test.child.communicate()
 
+            # Poll again after the optional readback because the child may have
+            # exited while ATS was handling timeout-adjacent bookkeeping.
             self._pollChild(test)
             if test.child.returncode is not None:
                 return self._finishCompletedTest(test)
@@ -406,8 +410,10 @@ class MachineCore(object):
         if test.statusCode == 0:
             status = PASSED
         elif "flux" in configuration.MACHINE_TYPE and test.statusCode == 142:
+            # Flux reports scheduler-enforced timeouts as return code 142.
             status = TIMEDOUT
         else:
+            # Preserve ATS' historical LSF launch/runtime deficiency checks.
             lsf_error = False
             with open(test.errname, 'r', errors='replace') as f:
                 lines = f.readlines()

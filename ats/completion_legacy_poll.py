@@ -1,8 +1,5 @@
 """Legacy polling detector and shared polling helpers for ATS machines."""
 
-import os
-import selectors
-import threading
 import time
 
 from ats.atsut import AtsError, PASSED
@@ -10,7 +7,7 @@ from ats.completion_detector import CompletionDetector
 
 
 class PollingCompletionDetector(CompletionDetector):
-    """Shared polling and signal-wait helpers used by ATS detectors."""
+    """Shared polling helpers used by ATS completion detectors."""
 
     @property
     def uses_completion_queue(self):
@@ -20,16 +17,6 @@ class PollingCompletionDetector(CompletionDetector):
             bool: ``True`` when signals should be enqueued for later draining.
         """
         return False
-
-    @property
-    def uses_signal_wait(self):
-        """Return whether child-completion wait primitives should be prepared.
-
-        Returns:
-            bool: ``True`` when pidfds or watcher threads should be set up at
-            launch time.
-        """
-        return True
 
     def completion_drain_limit(self):
         """Return the configured maximum completions drained per wakeup.
@@ -45,16 +32,14 @@ class PollingCompletionDetector(CompletionDetector):
         return max(1, limit)
 
     def prepare_for_launch(self, test):
-        """Prepare one launched test for completion signaling.
+        """Prepare one launched test for completion detection.
 
         Args:
             test: ATS test object whose child process has just been launched.
 
         Returns:
-            None: Completion wait primitives are installed when needed.
+            None: Legacy polling does not need launch-time setup.
         """
-        if self.uses_signal_wait:
-            self.ensure_pidfd(test)
 
     def close_for_test(self, test):
         """Release completion-detector resources associated with one test.
@@ -63,61 +48,21 @@ class PollingCompletionDetector(CompletionDetector):
             test: ATS test object that may own detector-specific wait state.
 
         Returns:
-            None: Detector-owned wait state is cleaned up when present.
+            None: Legacy polling does not need detector-specific cleanup.
         """
-        self.close_pidfd(test)
 
     def wait_for_completion_signal(self):
-        """Wait for likely completions according to detector policy.
+        """Wait for one scheduler polling interval.
 
         Returns:
-            list: Tests that were signaled as likely completed during the wait.
+            list: Always returns an empty list for polling-only waits.
         """
         start_us = time.time_ns() // 1000
         machine = self.machine
         machine._incrementCompletionStat("_waitForCompletionSignal_called")
-        registered = False
-        registered_count = 0
-        ready = []
-        selector = None
         used_queue_event_wait = False
         result_kind = "sleep_fallback"
         try:
-            try:
-                selector = selectors.DefaultSelector()
-            except Exception:
-                selector = None
-
-            if selector is not None:
-                try:
-                    for test in machine.running:
-                        pidfd = self.ensure_pidfd(test)
-                        if pidfd is None:
-                            continue
-                        try:
-                            selector.register(pidfd, selectors.EVENT_READ, test)
-                            registered = True
-                            registered_count += 1
-                        except Exception:
-                            self.close_pidfd(test)
-                    if registered:
-                        machine._incrementCompletionStat("_waitForCompletionSignal_pidfd_registered")
-                        ready = [key.data for key, _mask in selector.select(machine.naptime)]
-                        if ready:
-                            result_kind = "pidfd_ready"
-                            machine._incrementCompletionStat("_waitForCompletionSignal_pidfd_ready")
-                            machine._incrementCompletionStat("_waitForCompletionSignal_total_ready", len(ready))
-                            for test in ready:
-                                self.record_completion_signal(test)
-                        else:
-                            result_kind = "pidfd_timeout"
-                            machine._incrementCompletionStat("_waitForCompletionSignal_pidfd_timeout")
-                finally:
-                    selector.close()
-
-            if registered:
-                return ready
-
             if self.uses_completion_queue:
                 used_queue_event_wait = True
                 result_kind = "queue_event_wait"
@@ -136,9 +81,9 @@ class PollingCompletionDetector(CompletionDetector):
                 metadata={
                     "mode": getattr(machine, "completion_detection_mode", ""),
                     "running_count": len(machine.running),
-                    "registered": bool(registered),
-                    "registered_count": registered_count,
-                    "ready_count": len(ready),
+                    "registered": False,
+                    "registered_count": 0,
+                    "ready_count": 0,
                     "used_queue_event_wait": bool(used_queue_event_wait),
                     "result": result_kind,
                 },
@@ -283,123 +228,21 @@ class PollingCompletionDetector(CompletionDetector):
             test.ats_completion_signal_us = observed_us
             machine._incrementCompletionStat("completion_signal_recorded")
 
-    def ensure_pidfd(self, test):
-        """Return or create a pidfd for one running child when supported.
-
-        Args:
-            test: ATS test object whose child process should be observed.
-
-        Returns:
-            int|None: Open pidfd file descriptor, or ``None`` when pidfds are
-            unavailable and ATS must use the watcher fallback.
-        """
-        machine = self.machine
-        if getattr(machine, "_pidfdUnavailable", False):
-            self.ensure_completion_watcher(test)
-            return None
-        pidfd = getattr(test, "_pidfd", None)
-        if pidfd is not None:
-            return pidfd
-        if not hasattr(os, "pidfd_open"):
-            machine._pidfdUnavailable = True
-            self.ensure_completion_watcher(test)
-            return None
-        child = getattr(test, "child", None)
-        if child is None or getattr(child, "pid", None) is None:
-            return None
-        try:
-            pidfd = os.pidfd_open(child.pid)
-        except OSError:
-            self.ensure_completion_watcher(test)
-            return None
-        except AttributeError:
-            machine._pidfdUnavailable = True
-            self.ensure_completion_watcher(test)
-            return None
-        test._pidfd = pidfd
-        return pidfd
-
-    def ensure_completion_watcher(self, test):
-        """Start the watcher-thread fallback for completion signaling.
-
-        Args:
-            test: ATS test object whose child should be watched with
-                ``child.wait()``.
-
-        Returns:
-            None: A daemon watcher thread is created at most once per test.
-        """
-        child = getattr(test, "child", None)
-        if child is None:
-            return
-        watcher = getattr(test, "_completionWatcher", None)
-        if watcher is not None:
-            return
-
-        def _watch_for_completion():
-            try:
-                child.wait()
-            except Exception:
-                return
-            self.record_completion_signal(test)
-
-        watcher = threading.Thread(
-            target=_watch_for_completion,
-            name=f"ats-completion-{getattr(child, 'pid', 'unknown')}",
-            daemon=True,
-        )
-        test._completionWatcher = watcher
-        watcher.start()
-
-    def close_pidfd(self, test):
-        """Close a pidfd associated with one test if it exists.
-
-        Args:
-            test: ATS test object that may own ``_pidfd``.
-
-        Returns:
-            None: Missing or already-closed pidfds are ignored.
-        """
-        pidfd = getattr(test, "_pidfd", None)
-        if pidfd is None:
-            return
-        try:
-            os.close(pidfd)
-        except OSError:
-            pass
-        test._pidfd = None
-
 
 class LegacyPollCompletionDetector(PollingCompletionDetector):
-    """Preserve the historical ATS double-poll-with-sleep behavior."""
+    """Preserve the plain ATS polling behavior from the ``ale3d`` branch."""
 
     mode_name = "legacy_poll"
 
-    @property
-    def uses_signal_wait(self):
-        """Return whether launch-time signal wait setup is needed.
-
-        Returns:
-            bool: Always ``False`` for the legacy polling detector.
-        """
-        return False
-
     def check_running(self):
-        """Advance machine state using the historical polling behavior.
+        """Advance machine state using plain sleep-then-poll behavior.
 
         Returns:
             None: Completed tests may be finalized and removed from
             ``machine.running``.
         """
         machine = self.machine
-        completion_limit = self.completion_drain_limit()
-        if self.poll_running_tests(
-            allow_running_checks=True,
-            completion_limit=completion_limit,
-        ):
-            return
         time.sleep(machine.naptime)
         self.poll_running_tests(
             allow_running_checks=True,
-            completion_limit=completion_limit,
         )
