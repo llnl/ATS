@@ -57,17 +57,27 @@ The detector keeps strategy choice out of ``MachineCore.checkRunning()`` while
 reusing the same machine-owned helpers for pidfds, watcher threads, completion
 queues, and aggregated completion statistics.
 
-ATS ships three detector types:
+ATS ships two detector types:
 
-* ``ats.completion_fast_path.FastPathCompletionDetector`` waits for likely
-  completions first and then falls back to a full running-test check;
 * ``ats.completion_queue.CompletionQueueCompletionDetector`` records signaled
   completions into a queue and drains only those tests before falling back;
 * ``ats.completion_legacy_poll.LegacyPollCompletionDetector`` preserves the
   historical double-poll-with-sleep behavior.
 
-The normal machine constructor accepts ``completion_detection_mode`` and
-instantiates the matching detector:
+The ATS initialization path accepts ``completion_detection_mode`` and passes it
+through machine construction:
+
+::
+
+   import ats
+
+   ats.manager.init(
+       clas="...",
+       completion_detection_mode="completion_queue",
+   )
+
+Machine constructors also accept the same argument directly and instantiate the
+matching detector:
 
 ::
 
@@ -79,19 +89,6 @@ instantiates the matching detector:
        completion_detection_mode="completion_queue",
    )
 
-Wrappers that need to choose the detector before ATS configuration creates the
-machine can set ``ATS_COMPLETION_DETECTION_MODE`` in the environment:
-
-::
-
-   import os
-
-   os.environ["ATS_COMPLETION_DETECTION_MODE"] = "legacy_poll"
-
-   import ats
-
-   ats.manager.init(clas="...")
-
 Custom machine subclasses should pass the mode through to ``Machine`` so the
 selection stays explicit at construction time:
 
@@ -100,7 +97,7 @@ selection stays explicit at construction time:
    from ats import machines
 
    class MyMachine(machines.Machine):
-       def __init__(self, name, npMaxH, completion_detection_mode="fast_path"):
+       def __init__(self, name, npMaxH, completion_detection_mode="completion_queue"):
            super(MyMachine, self).__init__(
                name,
                npMaxH,

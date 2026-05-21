@@ -734,14 +734,34 @@ class AtsManager(object):
             log("-------------------------------", echo=True)
         return True
 
-    def init(self, clas = '', adder=None, examiner=None):
-        """This initialization is separate so that unit tests can be done on this module.
-            For this reason we delay any logging until main is called.
-            adder and examiner are called in configuration if given to allow user
-            a chance to add options and see results of option parsing.
+    def init(self, clas = '', adder=None, examiner=None,
+             completion_detection_mode=None):
+        """Initialize ATS configuration and machine state.
+
+        This initialization is separate so that unit tests can exercise this
+        module without running ``main``. Logging is therefore delayed until
+        after initialization completes.
+
+        Args:
+            clas (str): ATS command-line string to parse instead of
+                ``sys.argv[1:]``.
+            adder (callable|None): Optional callback that adds parser options
+                before ATS parses the command line.
+            examiner (callable|None): Optional callback that inspects parsed
+                options after initialization.
+            completion_detection_mode (str|None): Requested completion
+                detector mode to pass through ATS machine construction.
+
+        Returns:
+            None: Manager state is updated in place.
         """
         tempfile.tempdir = os.getcwd()
-        configuration.init(clas, adder, examiner)
+        configuration.init(
+            clas,
+            adder,
+            examiner,
+            completion_detection_mode=completion_detection_mode,
+        )
         self.options = configuration.options
         self.inputFiles = configuration.inputFiles
         self.machine = configuration.machine

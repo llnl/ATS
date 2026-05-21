@@ -3,10 +3,10 @@
 import time
 
 from ats.atsut import AtsError, PASSED
-from ats.completion_detector import CompletionDetector
+from ats.completion_legacy_poll import PollingCompletionDetector
 
 
-class CompletionQueueCompletionDetector(CompletionDetector):
+class CompletionQueueCompletionDetector(PollingCompletionDetector):
     """Drain explicitly signaled completions from a machine-owned queue."""
 
     mode_name = "completion_queue"
@@ -28,7 +28,7 @@ class CompletionQueueCompletionDetector(CompletionDetector):
             ``machine.running``.
         """
         machine = self.machine
-        completion_limit = self.completion_fast_path_drain_limit()
+        completion_limit = self.completion_drain_limit()
         machine._incrementCompletionStat("check_running_completion_queue_mode")
         if self.poll_queued_completion_tests(completion_limit=completion_limit):
             machine._incrementCompletionStat("check_running_queue_pre_drain_completed")

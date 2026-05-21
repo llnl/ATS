@@ -2,10 +2,7 @@
 """
 from collections import deque
 import subprocess, sys, os, threading, time, shlex
-from ats.completion_detector import (
-    completion_detection_mode_from_env,
-    create_completion_detector,
-)
+from ats.completion_detector import create_completion_detector
 from ats.atsut import RUNNING, TIMEDOUT, PASSED, FAILED, LSFERROR, \
      SKIPPED, HALTED, AtsError
 from ats.log import log, terminal
@@ -31,8 +28,7 @@ class MachineCore(object):
 
         Args:
             completion_detection_mode (str|None): Requested completion-detector
-                mode. When omitted, ATS uses ``ATS_COMPLETION_DETECTION_MODE``
-                from the environment and falls back to ``"fast_path"``.
+                mode. When omitted, ATS falls back to ``"completion_queue"``.
 
         Returns:
             None: Completion detector state and hooks are initialized.
@@ -114,17 +110,16 @@ class MachineCore(object):
 
         Args:
             completion_detection_mode (str|None): Requested detector mode. When
-                omitted, ATS uses ``ATS_COMPLETION_DETECTION_MODE`` from the
-                environment.
+                omitted, ATS falls back to ``"completion_queue"``.
 
         Returns:
             object: Newly created completion detector strategy instance.
         """
-        mode = completion_detection_mode
-        if mode is None:
-            mode = completion_detection_mode_from_env()
-        self.completion_detection_mode = mode
-        self._completionDetector = create_completion_detector(self, mode)
+        self._completionDetector = create_completion_detector(
+            self,
+            completion_detection_mode,
+        )
+        self.completion_detection_mode = self._completionDetector.mode_name
         return self._completionDetector
 
     def checkRunning(self):
