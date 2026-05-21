@@ -15,18 +15,17 @@ class FastPathCompletionDetector(CompletionDetector):
             None: Completed tests may be finalized and removed from
             ``machine.running``.
         """
-        machine = self.machine
-        completion_limit = machine._completionFastPathDrainLimit()
-        if machine._pollRunningTests(
+        completion_limit = self.completion_fast_path_drain_limit()
+        if self.poll_running_tests(
             allow_running_checks=False,
             completion_limit=completion_limit,
         ):
             return
         completion_hints = self.wait_for_completion_signal()
-        if completion_hints and machine._pollRunningTests(
+        if completion_hints and self.poll_running_tests(
             allow_running_checks=False,
             prioritized=completion_hints,
             completion_limit=completion_limit,
         ):
             return
-        machine._pollRunningTests(allow_running_checks=True)
+        self.poll_running_tests(allow_running_checks=True)

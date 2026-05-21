@@ -1,7 +1,7 @@
 """Definition of class Machine for overriding.
 """
 from collections import deque
-import selectors, subprocess, sys, os, threading, time, shlex
+import subprocess, sys, os, threading, time, shlex
 from ats.completion_detector import (
     completion_detection_mode_from_env,
     create_completion_detector,
@@ -197,209 +197,6 @@ class MachineCore(object):
 
         return False
 
-    def _pollRunningTests(
-        self,
-        allow_running_checks,
-        prioritized=None,
-        stop_after_completion=False,
-        completion_limit=None,
-    ):
-        """Poll running tests, optionally prioritizing likely completions.
-
-        Args:
-            allow_running_checks (bool): When ``False``, skip timeout and
-                runtime error checks for children that have not yet exited.
-            prioritized (iterable|None): Optional running-test candidates to
-                check before the rest of ``self.running``.
-            stop_after_completion (bool): If ``True``, stop after the first
-                completed test is handled.
-            completion_limit (int|None): Maximum number of completions to
-                process before returning control to the scheduler.
-
-        Returns:
-            int: Number of completed tests processed in this polling pass.
-        """
-        from ats import configuration
-
-        start_us = time.time_ns() // 1000
-        self._incrementCompletionStat("_pollRunningTests_called")
-        if allow_running_checks:
-            self._incrementCompletionStat("_pollRunningTests_allow_running_checks_true")
-        else:
-            self._incrementCompletionStat("_pollRunningTests_allow_running_checks_false")
-
-        prioritized = list(prioritized or [])
-        prioritized_count = len(prioritized)
-        ordered_count = 0
-        completed = 0
-        result_kind = "completed_none"
-        try:
-            ordered = []
-            seen_ids = set()
-            for test in prioritized:
-                test_id = id(test)
-                if test_id in seen_ids:
-                    continue
-                ordered.append(test)
-                seen_ids.add(test_id)
-            for test in self.running:
-                test_id = id(test)
-                if test_id in seen_ids:
-                    continue
-                ordered.append(test)
-                seen_ids.add(test_id)
-
-            ordered_count = len(ordered)
-            self._incrementCompletionStat("_pollRunningTests_total_ordered", ordered_count)
-
-            remaining = []
-            for index, test in enumerate(ordered):
-                done = self.getStatus(test, allow_running_checks=allow_running_checks)
-                if not done:
-                    remaining.append(test)
-                    continue
-                completed += 1
-                if test.status is not PASSED and configuration.options.oneFailure:
-                    raise AtsError("Test failed in oneFailure mode.")
-                if stop_after_completion or (
-                    completion_limit is not None and completed >= completion_limit
-                ):
-                    remaining.extend(ordered[index + 1:])
-                    self._preserve_new_running_tests(remaining, seen_ids)
-                    self.running = remaining
-                    result_kind = "stopped_after_completion"
-                    self._incrementCompletionStat("_pollRunningTests_stopped_after_completion")
-                    self._incrementCompletionStat("_pollRunningTests_total_completed", completed)
-                    return completed
-
-            self._preserve_new_running_tests(remaining, seen_ids)
-            self.running = remaining
-            self._incrementCompletionStat("_pollRunningTests_total_completed", completed)
-            if completed:
-                result_kind = "completed"
-                self._incrementCompletionStat("_pollRunningTests_completed")
-            else:
-                self._incrementCompletionStat("_pollRunningTests_completed_none")
-            return completed
-        finally:
-            self._recordCompletionInternalSpan(
-                "_pollRunningTests",
-                start_us,
-                time.time_ns() // 1000,
-                metadata={
-                    "mode": getattr(self, "completion_detection_mode", ""),
-                    "allow_running_checks": bool(allow_running_checks),
-                    "prioritized_count": prioritized_count,
-                    "ordered_count": ordered_count,
-                    "stop_after_completion": bool(stop_after_completion),
-                    "completion_limit": completion_limit,
-                    "completed_count": completed,
-                    "result": result_kind,
-                },
-            )
-
-    def _preserve_new_running_tests(self, remaining, seen_ids):
-        """Keep tests appended to ``self.running`` during completion callbacks.
-
-        Args:
-            remaining (list): Running tests that should remain after the current
-                polling pass.
-            seen_ids (set): Object ids already considered in the polling pass.
-
-        Returns:
-            None: ``remaining`` is updated in place.
-        """
-        remaining_ids = {id(test) for test in remaining}
-        for test in self.running:
-            test_id = id(test)
-            if test_id in seen_ids or test_id in remaining_ids:
-                continue
-            remaining.append(test)
-            remaining_ids.add(test_id)
-
-    def _waitForCompletionSignal(self, use_queue_event_wait=False):
-        """Wait for a local child exit, using pidfds when available.
-
-        Args:
-            use_queue_event_wait (bool): When ``True``, fall back to waiting on
-                the machine completion event instead of sleeping if pidfds are
-                unavailable.
-
-        Returns:
-            list: Running tests that were signaled as likely completed during
-            this wait interval. Queue-wait and sleep-fallback paths return an
-            empty list.
-        """
-        start_us = time.time_ns() // 1000
-        self._incrementCompletionStat("_waitForCompletionSignal_called")
-        registered = False
-        registered_count = 0
-        ready = []
-        selector = None
-        used_queue_event_wait = False
-        result_kind = "sleep_fallback"
-        try:
-            selector = selectors.DefaultSelector()
-        except Exception:
-            selector = None
-
-        try:
-            if selector is not None:
-                try:
-                    for test in self.running:
-                        pidfd = self._ensurePidfd(test)
-                        if pidfd is None:
-                            continue
-                        try:
-                            selector.register(pidfd, selectors.EVENT_READ, test)
-                            registered = True
-                            registered_count += 1
-                        except Exception:
-                            self._closePidfd(test)
-                    if registered:
-                        self._incrementCompletionStat("_waitForCompletionSignal_pidfd_registered")
-                        ready = [key.data for key, _mask in selector.select(self.naptime)]
-                        if ready:
-                            result_kind = "pidfd_ready"
-                            self._incrementCompletionStat("_waitForCompletionSignal_pidfd_ready")
-                            self._incrementCompletionStat("_waitForCompletionSignal_total_ready", len(ready))
-                            for test in ready:
-                                self._recordCompletionSignal(test)
-                        else:
-                            result_kind = "pidfd_timeout"
-                            self._incrementCompletionStat("_waitForCompletionSignal_pidfd_timeout")
-                finally:
-                    selector.close()
-
-            if registered:
-                return ready
-
-            if use_queue_event_wait:
-                used_queue_event_wait = True
-                result_kind = "queue_event_wait"
-                self._incrementCompletionStat("_waitForCompletionSignal_queue_event_wait")
-                self._completionEvent.wait(self.naptime)
-                return []
-
-            self._incrementCompletionStat("_waitForCompletionSignal_sleep_fallback")
-            time.sleep(self.naptime)
-            return []
-        finally:
-            self._recordCompletionInternalSpan(
-                "_waitForCompletionSignal",
-                start_us,
-                time.time_ns() // 1000,
-                metadata={
-                    "mode": getattr(self, "completion_detection_mode", ""),
-                    "running_count": len(self.running),
-                    "registered": bool(registered),
-                    "registered_count": registered_count,
-                    "ready_count": len(ready),
-                    "used_queue_event_wait": bool(used_queue_event_wait),
-                    "result": result_kind,
-                },
-            )
-
     def _completionStatsEnabled(self):
         """Return whether aggregated completion counters should be tracked.
 
@@ -581,19 +378,6 @@ class MachineCore(object):
         for callback in list(getattr(self, "_completion_queue_snapshot_hooks", [])):
             callback(timestamp_us, payload)
 
-    def _completionFastPathDrainLimit(self):
-        """Return the configured maximum completions drained per wakeup.
-
-        Returns:
-            int: Positive completion drain limit.
-        """
-        limit = getattr(self, "completion_fast_path_drain_limit", 128)
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 128
-        return max(1, limit)
-
     def _pollChild(self, test):
         """Poll one child process and return its current return code.
 
@@ -605,159 +389,6 @@ class MachineCore(object):
         """
         test.child.poll()
         return test.child.returncode
-
-    def _recordCompletionSignal(self, test, observed_us=None):
-        """Record a likely completion signal for one running test.
-
-        Args:
-            test: ATS test object associated with the completion signal.
-            observed_us (int|None): Signal timestamp in microseconds. Uses the
-                current time when omitted.
-
-        Returns:
-            None: Internal timestamps, queue state, and statistics are updated.
-        """
-        if observed_us is None:
-            observed_us = time.time_ns() // 1000
-        if getattr(test, "ats_completion_signal_us", None) is None:
-            test.ats_completion_signal_us = observed_us
-            self._incrementCompletionStat("completion_signal_recorded")
-        if not getattr(self._completionDetector, "uses_completion_queue", False):
-            return
-        with self._completionQueueLock:
-            test_id = id(test)
-            if test_id in self._completionQueueIds:
-                self._incrementCompletionStat("completion_queue_duplicate_signal")
-                return
-            self._completionQueue.append(test)
-            self._completionQueueIds.add(test_id)
-            self._completionEvent.set()
-            self._incrementCompletionStat("completion_queue_enqueued")
-            depth = len(self._completionQueue)
-        self._recordCompletionQueueSnapshot(
-            depth,
-            "completion_queue_enqueue",
-            timestamp_us=observed_us,
-        )
-
-    def _drainCompletionQueue(self, completion_limit=None):
-        """Remove queued completion candidates up to the configured limit.
-
-        Args:
-            completion_limit (int|None): Maximum number of queued tests to
-                return. ``None`` drains the entire queue.
-
-        Returns:
-            list: Queued tests selected for completion re-checking.
-        """
-        queued = []
-        with self._completionQueueLock:
-            while self._completionQueue:
-                if completion_limit is not None and len(queued) >= completion_limit:
-                    break
-                test = self._completionQueue.popleft()
-                self._completionQueueIds.discard(id(test))
-                queued.append(test)
-            remaining_depth = len(self._completionQueue)
-            if not self._completionQueue:
-                self._completionEvent.clear()
-        if queued:
-            self._recordCompletionQueueSnapshot(
-                remaining_depth,
-                "completion_queue_drain",
-                metadata={
-                    "drained_count": len(queued),
-                    "completion_limit": completion_limit,
-                },
-            )
-        return queued
-
-    def _pollQueuedCompletionTests(self, completion_limit=None):
-        """Handle completion candidates from the queued completion path.
-
-        Args:
-            completion_limit (int|None): Maximum number of queued candidates to
-                process in this pass.
-
-        Returns:
-            int: Number of running tests confirmed completed in this pass.
-        """
-        from ats import configuration
-
-        start_us = time.time_ns() // 1000
-        self._incrementCompletionStat("_pollQueuedCompletionTests_called")
-        queued_count = 0
-        selected_count = 0
-        stale_count = 0
-        completed = 0
-        result_kind = "empty"
-        try:
-            queued = self._drainCompletionQueue(completion_limit=completion_limit)
-            queued_count = len(queued)
-            self._incrementCompletionStat("_pollQueuedCompletionTests_total_queued", queued_count)
-            if not queued:
-                self._incrementCompletionStat("_pollQueuedCompletionTests_empty")
-                return 0
-
-            selected = []
-            selected_ids = set()
-            running_ids = {id(test) for test in self.running}
-            for test in queued:
-                test_id = id(test)
-                if test_id in selected_ids:
-                    continue
-                if test_id not in running_ids:
-                    stale_count += 1
-                    continue
-                selected.append(test)
-                selected_ids.add(test_id)
-
-            selected_count = len(selected)
-            self._incrementCompletionStat("_pollQueuedCompletionTests_total_selected", selected_count)
-            self._incrementCompletionStat("_pollQueuedCompletionTests_total_stale", stale_count)
-            if stale_count:
-                self._incrementCompletionStat("_pollQueuedCompletionTests_saw_stale_entries")
-            if not selected:
-                result_kind = "stale_only"
-                self._incrementCompletionStat("_pollQueuedCompletionTests_selected_none")
-                return 0
-
-            completed_ids = set()
-            for test in selected:
-                done = self.getStatus(test, allow_running_checks=False)
-                if not done:
-                    continue
-                completed_ids.add(id(test))
-                completed += 1
-                if test.status is not PASSED and configuration.options.oneFailure:
-                    raise AtsError("Test failed in oneFailure mode.")
-
-            self._incrementCompletionStat("_pollQueuedCompletionTests_total_completed", completed)
-            if completed_ids:
-                self.running = [
-                    test for test in self.running if id(test) not in completed_ids
-                ]
-                result_kind = "completed"
-                self._incrementCompletionStat("_pollQueuedCompletionTests_completed")
-            else:
-                result_kind = "selected_none_completed"
-                self._incrementCompletionStat("_pollQueuedCompletionTests_selected_none_completed")
-            return completed
-        finally:
-            self._recordCompletionInternalSpan(
-                "_pollQueuedCompletionTests",
-                start_us,
-                time.time_ns() // 1000,
-                metadata={
-                    "mode": getattr(self, "completion_detection_mode", ""),
-                    "completion_limit": completion_limit,
-                    "queued_count": queued_count,
-                    "selected_count": selected_count,
-                    "stale_count": stale_count,
-                    "completed_count": completed,
-                    "result": result_kind,
-                },
-            )
 
     def _finishCompletedTest(self, test):
         """Finalize status selection for a child that has already exited.
@@ -841,7 +472,7 @@ class MachineCore(object):
                 print(line)
                 print(line, file=outhandle)
 
-        self._closePidfd(test)
+        self._completionDetector.close_for_test(test)
         self.testEnded(test, status)
         return True
 
@@ -876,91 +507,6 @@ class MachineCore(object):
                 print("ATS Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
                 return True
         return False
-
-    def _ensurePidfd(self, test):
-        """Return or create a pidfd for one running child when supported.
-
-        Args:
-            test: ATS test object whose child process should be observed.
-
-        Returns:
-            int|None: Open pidfd file descriptor, or ``None`` when pidfds are
-            unavailable and ATS must use the watcher fallback.
-        """
-        if getattr(self, "_pidfdUnavailable", False):
-            self._ensureCompletionWatcher(test)
-            return None
-        pidfd = getattr(test, "_pidfd", None)
-        if pidfd is not None:
-            return pidfd
-        if not hasattr(os, "pidfd_open"):
-            self._pidfdUnavailable = True
-            self._ensureCompletionWatcher(test)
-            return None
-        child = getattr(test, "child", None)
-        if child is None or getattr(child, "pid", None) is None:
-            return None
-        try:
-            pidfd = os.pidfd_open(child.pid)
-        except OSError:
-            self._ensureCompletionWatcher(test)
-            return None
-        except AttributeError:
-            self._pidfdUnavailable = True
-            self._ensureCompletionWatcher(test)
-            return None
-        test._pidfd = pidfd
-        return pidfd
-
-    def _ensureCompletionWatcher(self, test):
-        """Start the watcher-thread fallback for completion signaling.
-
-        Args:
-            test: ATS test object whose child should be watched with
-                ``child.wait()``.
-
-        Returns:
-            None: A daemon watcher thread is created at most once per test.
-        """
-        child = getattr(test, "child", None)
-        if child is None:
-            return
-        watcher = getattr(test, "_completionWatcher", None)
-        if watcher is not None:
-            return
-
-        def _watch_for_completion():
-            try:
-                child.wait()
-            except Exception:
-                return
-            self._recordCompletionSignal(test)
-
-        watcher = threading.Thread(
-            target=_watch_for_completion,
-            name=f"ats-completion-{getattr(child, 'pid', 'unknown')}",
-            daemon=True,
-        )
-        test._completionWatcher = watcher
-        watcher.start()
-
-    def _closePidfd(self, test):
-        """Close a pidfd associated with one test if it exists.
-
-        Args:
-            test: ATS test object that may own ``_pidfd``.
-
-        Returns:
-            None: Missing or already-closed pidfds are ignored.
-        """
-        pidfd = getattr(test, "_pidfd", None)
-        if pidfd is None:
-            return
-        try:
-            os.close(pidfd)
-        except OSError:
-            pass
-        test._pidfd = None
 
     def testEnded(self, test, status):
         """Do book-keeping when a job has exited;
@@ -1026,7 +572,7 @@ class MachineCore(object):
         "Kill the job running test."
         if test.child:
             test.child.kill()
-            self._closePidfd(test)
+            self._completionDetector.close_for_test(test)
             if test.stdOutLocGet() != 'terminal':
                 test.fileHandleClose()
 

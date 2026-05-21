@@ -27,14 +27,14 @@ class LegacyPollCompletionDetector(CompletionDetector):
             ``machine.running``.
         """
         machine = self.machine
-        completion_limit = machine._completionFastPathDrainLimit()
-        if machine._pollRunningTests(
+        completion_limit = self.completion_fast_path_drain_limit()
+        if self.poll_running_tests(
             allow_running_checks=True,
             completion_limit=completion_limit,
         ):
             return
         time.sleep(machine.naptime)
-        machine._pollRunningTests(
+        self.poll_running_tests(
             allow_running_checks=True,
             completion_limit=completion_limit,
         )
