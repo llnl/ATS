@@ -60,7 +60,7 @@ aggregated completion statistics.
 ATS ships two detector types:
 
 * ``ats.completion_queue.CompletionQueueCompletionDetector`` records signaled
-  completions into a queue and drains only those tests before falling back;
+  completions into a queue and drains only those tests;
 * ``ats.completion_legacy_poll.LegacyPollCompletionDetector`` preserves the
   plain sleep-then-poll behavior from the ``ale3d`` ATS branch.
 

@@ -1,6 +1,8 @@
 import unittest
 
+from ats.atsut import AtsError
 from ats.completion_queue import CompletionQueueCompletionDetector
+from ats.completion_detector import create_completion_detector
 from ats.completion_legacy_poll import LegacyPollCompletionDetector
 from ats.machines import Machine
 
@@ -45,6 +47,15 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             machine._completionDetector,
             CompletionQueueCompletionDetector,
         )
+
+    def test_flux_direct_rejects_completion_queue_mode(self):
+        """FluxDirect should reject the queued completion detector mode."""
+
+        class FluxDirect:
+            __module__ = "ats.atsMachines.FutureMachines.flux_direct"
+
+        with self.assertRaisesRegex(AtsError, "unsupported for FluxDirect"):
+            create_completion_detector(FluxDirect(), "completion_queue")
 
 
 if __name__ == "__main__":

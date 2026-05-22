@@ -1,8 +1,9 @@
-"""Completion-detection strategy interface and factory helpers."""
+"""Completion-detection strategy base class and factory helpers."""
 
 from abc import ABC, abstractmethod
+import time
 
-from ats.atsut import AtsError
+from ats.atsut import AtsError, PASSED
 
 
 def normalize_completion_detection_mode(mode):
@@ -18,8 +19,34 @@ def normalize_completion_detection_mode(mode):
     return str(mode or "completion_queue").strip().lower() or "completion_queue"
 
 
+def _validate_completion_detection_mode_for_machine(machine, normalized_mode):
+    """Reject detector modes unsupported by one machine implementation.
+
+    Args:
+        machine: Machine instance that would own the detector.
+        normalized_mode (str): Normalized detector mode name.
+
+    Returns:
+        None: Validation succeeds without modifying ``machine``.
+
+    Raises:
+        AtsError: If ``normalized_mode`` is unsupported for ``machine``.
+    """
+    machine_class = machine.__class__.__name__
+    machine_module = machine.__class__.__module__
+    if (
+        normalized_mode == "completion_queue"
+        and machine_class == "FluxDirect"
+        and machine_module.endswith("flux_direct")
+    ):
+        raise AtsError(
+            "completion_detection_mode='completion_queue' is unsupported for "
+            "FluxDirect. Use 'legacy_poll' for this experimental machine."
+        )
+
+
 class CompletionDetector(ABC):
-    """Abstract policy object for machine completion detection."""
+    """Abstract policy object with shared ATS completion-detection helpers."""
 
     mode_name = ""
 
@@ -29,27 +56,31 @@ class CompletionDetector(ABC):
         Args:
             machine: Machine instance that owns completion helpers and running
                 test state.
+
+        Returns:
+            None: The detector stores a reference to ``machine``.
         """
         self.machine = machine
 
     def prepare_for_launch(self, test):
-        """Prepare one launched test for completion signaling.
+        """Prepare one launched test for detector-specific completion work.
 
         Args:
             test: ATS test object whose child process has just been launched.
 
         Returns:
-            None: Default detector preparation is a no-op.
+            None: The default detector implementation needs no launch-time
+            setup.
         """
 
     def close_for_test(self, test):
-        """Release completion-detector resources associated with one test.
+        """Release detector-owned state associated with one finished test.
 
         Args:
             test: ATS test object that may own detector-specific wait state.
 
         Returns:
-            None: Default detector cleanup is a no-op.
+            None: The default detector implementation needs no cleanup.
         """
 
     @abstractmethod
@@ -75,6 +106,7 @@ def create_completion_detector(machine, mode):
         AtsError: If ``mode`` is not one of the supported detector modes.
     """
     normalized_mode = normalize_completion_detection_mode(mode)
+    _validate_completion_detection_mode_for_machine(machine, normalized_mode)
     if normalized_mode == "completion_queue":
         from ats.completion_queue import CompletionQueueCompletionDetector
 

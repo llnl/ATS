@@ -1,15 +1,29 @@
 """Queued completion detector for ATS machines."""
 
+import threading
 import time
 
 from ats.atsut import AtsError, PASSED
-from ats.completion_legacy_poll import PollingCompletionDetector
+from ats.completion_detector import CompletionDetector
 
 
-class CompletionQueueCompletionDetector(PollingCompletionDetector):
+class CompletionQueueCompletionDetector(CompletionDetector):
     """Drain explicitly signaled completions from a machine-owned queue."""
 
     mode_name = "completion_queue"
+
+    def completion_drain_limit(self):
+        """Return the configured maximum completions drained per wakeup.
+
+        Returns:
+            int: Positive completion drain limit.
+        """
+        limit = getattr(self.machine, "completion_fast_path_drain_limit", 128)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 128
+        return max(1, limit)
 
     def wait_for_completion_signal(self):
         """Wait one polling interval for queued completion signals.
@@ -42,6 +56,50 @@ class CompletionQueueCompletionDetector(PollingCompletionDetector):
                 },
             )
 
+    def prepare_for_launch(self, test):
+        """Start the queued completion watcher for one launched test.
+
+        Args:
+            test: ATS test object whose child process has just been launched.
+
+        Returns:
+            None: A daemon watcher thread is created at most once per test.
+        """
+        child = getattr(test, "child", None)
+        if child is None:
+            return
+        watcher = getattr(test, "_completionWatcher", None)
+        if watcher is not None:
+            return
+
+        def watch_for_completion():
+            """Wait for one child to exit and then enqueue its completion."""
+            try:
+                child.wait()
+            except Exception:
+                return
+            self.record_completion_signal(test)
+
+        watcher = threading.Thread(
+            target=watch_for_completion,
+            name=f"ats-completion-{getattr(child, 'pid', 'unknown')}",
+            daemon=True,
+        )
+        test._completionWatcher = watcher
+        watcher.start()
+
+    def close_for_test(self, test):
+        """Clear watcher bookkeeping for one finished test.
+
+        Args:
+            test: ATS test object that may own a completion watcher thread.
+
+        Returns:
+            None: Detector bookkeeping attributes are removed when present.
+        """
+        if hasattr(test, "_completionWatcher"):
+            test._completionWatcher = None
+
     def check_running(self):
         """Advance machine state by draining the queued completion set first.
 
@@ -62,13 +120,8 @@ class CompletionQueueCompletionDetector(PollingCompletionDetector):
             machine._incrementCompletionStat("check_running_queue_post_wait_completed")
             return
         machine._incrementCompletionStat("check_running_queue_post_wait_empty")
-        machine._incrementCompletionStat("check_running_queue_fallback_poll_running")
-        self.poll_running_tests(
-            allow_running_checks=True,
-            completion_limit=completion_limit,
-        )
 
-    def record_completion_signal(self, test, observed_us=None):
+    def record_completion_signal(self, test):
         """Record a likely completion signal and enqueue it for later draining.
 
         Args:
@@ -80,9 +133,10 @@ class CompletionQueueCompletionDetector(PollingCompletionDetector):
             None: Internal timestamps, queue state, and statistics are updated.
         """
         machine = self.machine
-        super().record_completion_signal(test, observed_us=observed_us)
-        if observed_us is None:
-            observed_us = getattr(test, "ats_completion_signal_us", None)
+        observed_us = time.time_ns() // 1000
+        if getattr(test, "ats_completion_signal_us", None) is None:
+            test.ats_completion_signal_us = observed_us
+            machine._incrementCompletionStat("completion_signal_recorded")
         with machine._completionQueueLock:
             test_id = id(test)
             if test_id in machine._completionQueueIds:
@@ -202,7 +256,7 @@ class CompletionQueueCompletionDetector(PollingCompletionDetector):
                 machine._incrementCompletionStat("_pollQueuedCompletionTests_completed")
             else:
                 result_kind = "selected_none_completed"
-                machine._incrementCompletionStat("_pollQueuedCompletionTests_selected_none_completed")
+            machine._incrementCompletionStat("_pollQueuedCompletionTests_selected_none_completed")
             return completed
         finally:
             machine._recordCompletionInternalSpan(

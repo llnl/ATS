@@ -1,46 +1,33 @@
-"""Legacy polling detector and shared polling helpers for ATS machines."""
+"""Legacy polling detector for ATS machines."""
 
 import time
 
-from ats.atsut import AtsError, PASSED
 from ats.completion_detector import CompletionDetector
 
 
-class PollingCompletionDetector(CompletionDetector):
-    """Shared polling helpers used by ATS completion detectors."""
+class LegacyPollCompletionDetector(CompletionDetector):
+    """Preserve the plain ATS polling behavior from the ``ale3d`` branch."""
 
-    def completion_drain_limit(self):
-        """Return the configured maximum completions drained per wakeup.
+    mode_name = "legacy_poll"
 
-        Returns:
-            int: Positive completion drain limit.
-        """
-        limit = getattr(self.machine, "completion_fast_path_drain_limit", 128)
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 128
-        return max(1, limit)
-
-    def prepare_for_launch(self, test):
-        """Prepare one launched test for completion detection.
+    def preserve_new_running_tests(self, remaining, seen_ids):
+        """Keep tests appended to ``machine.running`` during completion callbacks.
 
         Args:
-            test: ATS test object whose child process has just been launched.
+            remaining (list): Running tests that should remain after the current
+                polling pass.
+            seen_ids (set): Object ids already considered in the polling pass.
 
         Returns:
-            None: Legacy polling does not need launch-time setup.
+            None: ``remaining`` is updated in place.
         """
-
-    def close_for_test(self, test):
-        """Release completion-detector resources associated with one test.
-
-        Args:
-            test: ATS test object that may own detector-specific wait state.
-
-        Returns:
-            None: Legacy polling does not need detector-specific cleanup.
-        """
+        remaining_ids = {id(test) for test in remaining}
+        for test in self.machine.running:
+            test_id = id(test)
+            if test_id in seen_ids or test_id in remaining_ids:
+                continue
+            remaining.append(test)
+            remaining_ids.add(test_id)
 
     def poll_running_tests(
         self,
@@ -56,7 +43,7 @@ class PollingCompletionDetector(CompletionDetector):
                 runtime error checks for children that have not yet exited.
             prioritized (iterable|None): Optional running-test candidates to
                 check before the rest of ``machine.running``.
-            stop_after_completion (bool): If ``True``, stop after the first
+            stop_after_completion (bool): When ``True``, stop after the first
                 completed test is handled.
             completion_limit (int|None): Maximum number of completions to
                 process before returning control to the scheduler.
@@ -144,48 +131,6 @@ class PollingCompletionDetector(CompletionDetector):
                 },
             )
 
-    def preserve_new_running_tests(self, remaining, seen_ids):
-        """Keep tests appended to ``machine.running`` during completion callbacks.
-
-        Args:
-            remaining (list): Running tests that should remain after the current
-                polling pass.
-            seen_ids (set): Object ids already considered in the polling pass.
-
-        Returns:
-            None: ``remaining`` is updated in place.
-        """
-        remaining_ids = {id(test) for test in remaining}
-        for test in self.machine.running:
-            test_id = id(test)
-            if test_id in seen_ids or test_id in remaining_ids:
-                continue
-            remaining.append(test)
-            remaining_ids.add(test_id)
-
-    def record_completion_signal(self, test, observed_us=None):
-        """Record a likely completion signal for one running test.
-
-        Args:
-            test: ATS test object associated with the completion signal.
-            observed_us (int|None): Signal timestamp in microseconds. Uses the
-                current time when omitted.
-
-        Returns:
-            None: Internal timestamps and statistics are updated.
-        """
-        machine = self.machine
-        if observed_us is None:
-            observed_us = time.time_ns() // 1000
-        if getattr(test, "ats_completion_signal_us", None) is None:
-            test.ats_completion_signal_us = observed_us
-            machine._incrementCompletionStat("completion_signal_recorded")
-
-
-class LegacyPollCompletionDetector(PollingCompletionDetector):
-    """Preserve the plain ATS polling behavior from the ``ale3d`` branch."""
-
-    mode_name = "legacy_poll"
 
     def check_running(self):
         """Advance machine state using plain sleep-then-poll behavior.

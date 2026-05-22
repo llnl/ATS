@@ -573,7 +573,6 @@ class MachineCore(object):
         "Kill the job running test."
         if test.child:
             test.child.kill()
-            self._completionDetector.close_for_test(test)
             if test.stdOutLocGet() != 'terminal':
                 test.fileHandleClose()
 
@@ -898,11 +897,14 @@ The subprocess part of launch. Also the part that might fail.
                 else:
                     test.child = subprocess.Popen(test.commandList, cwd=test.directory, stdout = subprocess.PIPE, stderr=subprocess.STDOUT, env=E, stdin=testStdin)
 
-            self._completionDetector.prepare_for_launch(test)
             test.set(RUNNING, test.commandLine)
 
             self.running.append(test)
             self.numberTestsRunning += 1
+            # Detector-specific completion wait state is armed only after the
+            # test is visible in ``self.running`` so early exits still map back
+            # to a live ATS test object.
+            self._completionDetector.prepare_for_launch(test)
             if MachineCore.debugClass or MachineCore.canRunNow_debugClass:
                 print("DEBUG MachineCore.testEnded increased self.numberTestsRunning by 1 to %d " % self.numberTestsRunning)
 
