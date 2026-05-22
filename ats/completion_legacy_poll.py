@@ -3,6 +3,7 @@
 import time
 
 from ats.completion_detector import CompletionDetector
+from ats.atsut import AtsError, PASSED
 
 
 class LegacyPollCompletionDetector(CompletionDetector):

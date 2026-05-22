@@ -83,6 +83,14 @@ class CompletionDetector(ABC):
             None: The default detector implementation needs no cleanup.
         """
 
+    def owns_child_reaping(self):
+        """Return whether this detector is responsible for child reaping.
+
+        Returns:
+            bool: ``False`` for the default detector behavior.
+        """
+        return False
+
     @abstractmethod
     def check_running(self):
         """Update machine running state according to one detector strategy.

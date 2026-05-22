@@ -157,12 +157,38 @@ class MachineCore(object):
             ``False`` while the child remains running.
         """
         from ats import configuration
-        self._pollChild(test)
-        if test.child.returncode is not None:
-            return self._finishCompletedTest(test)
+        if self._observeCompletedChild(test):
+            return True
 
         if not allow_running_checks:
             return False
+
+        return self._checkRunningHealth(test)
+
+    def _observeCompletedChild(self, test):
+        """Finalize a child that has already exited if its return code is known.
+
+        Args:
+            test: ATS test object whose child may already be complete.
+
+        Returns:
+            bool: ``True`` when completion finalization ran.
+        """
+        self._pollChild(test)
+        if test.child.returncode is None:
+            return False
+        return self._finishCompletedTest(test)
+
+    def _checkRunningHealth(self, test):
+        """Apply timeout and runtime-error checks to one still-running test.
+
+        Args:
+            test: ATS test object whose child is still expected to be running.
+
+        Returns:
+            bool: ``True`` when the health check finishes the test.
+        """
+        from ats import configuration
 
         overtime, fraction = self.checkForTimeOut(test)
         if fraction > .9 or overtime != 0:
@@ -171,11 +197,8 @@ class MachineCore(object):
             if configuration.SYS_TYPE.startswith('somesystemxxx'):
                 stdoutdata, stderrdata = test.child.communicate()
 
-            # Poll again after the optional readback because the child may have
-            # exited while ATS was handling timeout-adjacent bookkeeping.
-            self._pollChild(test)
-            if test.child.returncode is not None:
-                return self._finishCompletedTest(test)
+            if self._observeCompletedChild(test):
+                return True
 
         overtime, fraction = self.checkForTimeOut(test)
         if overtime != 0:
@@ -386,8 +409,50 @@ class MachineCore(object):
         Returns:
             int|None: Child return code, or ``None`` while still running.
         """
+        if self._completionDetector.owns_child_reaping():
+            return test.child.returncode
         test.child.poll()
         return test.child.returncode
+
+    def _preserve_new_running_tests(self, remaining, seen_ids):
+        """Keep tests appended to ``self.running`` during a running-state scan.
+
+        Args:
+            remaining (list): Running tests that should remain after the scan.
+            seen_ids (set): Object ids already considered in the current pass.
+
+        Returns:
+            None: ``remaining`` is updated in place.
+        """
+        remaining_ids = {id(test) for test in remaining}
+        for test in self.running:
+            test_id = id(test)
+            if test_id in seen_ids or test_id in remaining_ids:
+                continue
+            remaining.append(test)
+            remaining_ids.add(test_id)
+
+    def scan_running_tests_for_health(self):
+        """Check still-running tests for timeout and runtime launch failures.
+
+        Returns:
+            int: Number of running tests completed by health checks.
+        """
+        ordered = list(self.running)
+        seen_ids = {id(test) for test in ordered}
+        remaining = []
+        completed = 0
+        for test in ordered:
+            if getattr(test.child, "returncode", None) is not None:
+                remaining.append(test)
+                continue
+            if self._checkRunningHealth(test):
+                completed += 1
+                continue
+            remaining.append(test)
+        self._preserve_new_running_tests(remaining, seen_ids)
+        self.running = remaining
+        return completed
 
     def _finishCompletedTest(self, test):
         """Finalize status selection for a child that has already exited.
@@ -897,14 +962,10 @@ The subprocess part of launch. Also the part that might fail.
                 else:
                     test.child = subprocess.Popen(test.commandList, cwd=test.directory, stdout = subprocess.PIPE, stderr=subprocess.STDOUT, env=E, stdin=testStdin)
 
+            self._completionDetector.prepare_for_launch(test)
             test.set(RUNNING, test.commandLine)
-
             self.running.append(test)
             self.numberTestsRunning += 1
-            # Detector-specific completion wait state is armed only after the
-            # test is visible in ``self.running`` so early exits still map back
-            # to a live ATS test object.
-            self._completionDetector.prepare_for_launch(test)
             if MachineCore.debugClass or MachineCore.canRunNow_debugClass:
                 print("DEBUG MachineCore.testEnded increased self.numberTestsRunning by 1 to %d " % self.numberTestsRunning)
 

@@ -1,5 +1,6 @@
 """Queued completion detector for ATS machines."""
 
+import os
 import threading
 import time
 
@@ -11,6 +12,82 @@ class CompletionQueueCompletionDetector(CompletionDetector):
     """Drain explicitly signaled completions from a machine-owned queue."""
 
     mode_name = "completion_queue"
+
+    def __init__(self, machine):
+        """Initialize queue-mode reaper state for one ATS machine.
+
+        Args:
+            machine: Machine instance that owns queue-mode running tests.
+        """
+        super().__init__(machine)
+        self._reaper_thread = None
+        self._reaper_stop = False
+        self._reaper_lock = threading.Lock()
+        self._reaper_condition = threading.Condition(self._reaper_lock)
+        self._registered_tests_by_pid = {}
+
+    def owns_child_reaping(self):
+        """Queue mode owns child reaping through the detector reaper."""
+        return True
+
+    def _ensure_reaper_started(self):
+        """Start the queue-mode reaper thread on first child registration."""
+        if self._reaper_thread is not None:
+            return
+        self._reaper_thread = threading.Thread(
+            target=self._reaper_loop,
+            name="ats-completion-reaper",
+            daemon=True,
+        )
+        self._reaper_thread.start()
+
+    def _wait_status_to_returncode(self, wait_status):
+        """Convert one raw wait status to subprocess-style return codes."""
+        if os.WIFEXITED(wait_status):
+            return os.WEXITSTATUS(wait_status)
+        if os.WIFSIGNALED(wait_status):
+            return -os.WTERMSIG(wait_status)
+        return wait_status
+
+    def _reaper_loop(self):
+        """Reap registered queue-mode children and enqueue their completions."""
+        machine = self.machine
+        while True:
+            with self._reaper_condition:
+                while not self._reaper_stop and not self._registered_tests_by_pid:
+                    self._reaper_condition.wait()
+                if self._reaper_stop and not self._registered_tests_by_pid:
+                    return
+
+            try:
+                pid, wait_status = os.waitpid(-1, 0)
+            except ChildProcessError:
+                machine._incrementCompletionStat("completion_queue_reaper_child_process_error")
+                with self._reaper_condition:
+                    if not self._registered_tests_by_pid:
+                        continue
+                time.sleep(0.01)
+                continue
+            except OSError:
+                machine._incrementCompletionStat("completion_queue_reaper_waitpid_error")
+                time.sleep(0.01)
+                continue
+
+            with self._reaper_condition:
+                test = self._registered_tests_by_pid.pop(pid, None)
+
+            if test is None:
+                machine._incrementCompletionStat("completion_queue_reaper_unknown_pid")
+                continue
+
+            child = getattr(test, "child", None)
+            if child is None:
+                machine._incrementCompletionStat("completion_queue_reaper_missing_child")
+                continue
+
+            child.returncode = self._wait_status_to_returncode(wait_status)
+            machine._incrementCompletionStat("completion_queue_reaper_reaped")
+            self.record_completion_signal(test)
 
     def completion_drain_limit(self):
         """Return the configured maximum completions drained per wakeup.
@@ -57,48 +134,43 @@ class CompletionQueueCompletionDetector(CompletionDetector):
             )
 
     def prepare_for_launch(self, test):
-        """Start the queued completion watcher for one launched test.
+        """Register one launched child with the queued completion reaper.
 
         Args:
             test: ATS test object whose child process has just been launched.
 
         Returns:
-            None: A daemon watcher thread is created at most once per test.
+            None: The queue-mode reaper is started lazily and the child pid is
+            registered for reaping.
         """
         child = getattr(test, "child", None)
-        if child is None:
+        pid = getattr(child, "pid", None)
+        if child is None or pid is None:
             return
-        watcher = getattr(test, "_completionWatcher", None)
-        if watcher is not None:
-            return
-
-        def watch_for_completion():
-            """Wait for one child to exit and then enqueue its completion."""
-            try:
-                child.wait()
-            except Exception:
-                return
-            self.record_completion_signal(test)
-
-        watcher = threading.Thread(
-            target=watch_for_completion,
-            name=f"ats-completion-{getattr(child, 'pid', 'unknown')}",
-            daemon=True,
-        )
-        test._completionWatcher = watcher
-        watcher.start()
+        with self._reaper_condition:
+            self._ensure_reaper_started()
+            self._registered_tests_by_pid[pid] = test
+            self._reaper_condition.notify()
+        self.machine._incrementCompletionStat("completion_queue_reaper_registered")
 
     def close_for_test(self, test):
-        """Clear watcher bookkeeping for one finished test.
+        """Clear reaper bookkeeping for one finished test.
 
         Args:
-            test: ATS test object that may own a completion watcher thread.
+            test: ATS test object that may still be registered with the queue
+                reaper.
 
         Returns:
-            None: Detector bookkeeping attributes are removed when present.
+            None: Any stale pid registration is removed when present.
         """
-        if hasattr(test, "_completionWatcher"):
-            test._completionWatcher = None
+        child = getattr(test, "child", None)
+        pid = getattr(child, "pid", None)
+        if pid is None:
+            return
+        with self._reaper_condition:
+            registered = self._registered_tests_by_pid.get(pid)
+            if registered is test:
+                self._registered_tests_by_pid.pop(pid, None)
 
     def check_running(self):
         """Advance machine state by draining the queued completion set first.
@@ -112,14 +184,15 @@ class CompletionQueueCompletionDetector(CompletionDetector):
         machine._incrementCompletionStat("check_running_completion_queue_mode")
         if self.poll_queued_completion_tests(completion_limit=completion_limit):
             machine._incrementCompletionStat("check_running_queue_pre_drain_completed")
-            return
-        machine._incrementCompletionStat("check_running_queue_pre_drain_empty")
-        machine._incrementCompletionStat("check_running_wait_for_completion_signal")
-        self.wait_for_completion_signal()
-        if self.poll_queued_completion_tests(completion_limit=completion_limit):
-            machine._incrementCompletionStat("check_running_queue_post_wait_completed")
-            return
-        machine._incrementCompletionStat("check_running_queue_post_wait_empty")
+        else:
+            machine._incrementCompletionStat("check_running_queue_pre_drain_empty")
+            machine._incrementCompletionStat("check_running_wait_for_completion_signal")
+            self.wait_for_completion_signal()
+            if self.poll_queued_completion_tests(completion_limit=completion_limit):
+                machine._incrementCompletionStat("check_running_queue_post_wait_completed")
+            else:
+                machine._incrementCompletionStat("check_running_queue_post_wait_empty")
+        machine.scan_running_tests_for_health()
 
     def record_completion_signal(self, test):
         """Record a likely completion signal and enqueue it for later draining.
