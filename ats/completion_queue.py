@@ -25,6 +25,10 @@ class CompletionQueueCompletionDetector(CompletionDetector):
         self._reaper_lock = threading.Lock()
         self._reaper_condition = threading.Condition(self._reaper_lock)
         self._registered_tests_by_pid = {}
+        self._unexpected_reaps = []
+        self._unexpected_reaps_count = 0
+        self._unexpected_reaps_dropped = 0
+        self._unexpected_reaps_lock = threading.Lock()
 
     def owns_child_reaping(self):
         """Queue mode owns child reaping through the detector reaper."""
@@ -48,6 +52,88 @@ class CompletionQueueCompletionDetector(CompletionDetector):
         if os.WIFSIGNALED(wait_status):
             return -os.WTERMSIG(wait_status)
         return wait_status
+
+    def _handle_reaped_pid(self, pid, wait_status):
+        """Route one reaped child to the matching registered test if present."""
+        machine = self.machine
+        with self._reaper_condition:
+            test = self._registered_tests_by_pid.pop(pid, None)
+
+        if test is None:
+            machine._incrementCompletionStat("completion_queue_reaper_unknown_pid")
+            self._recordUnexpectedCompletionReap(pid, wait_status)
+            return
+
+        child = getattr(test, "child", None)
+        if child is None:
+            machine._incrementCompletionStat("completion_queue_reaper_missing_child")
+            return
+
+        child.returncode = self._wait_status_to_returncode(wait_status)
+        machine._incrementCompletionStat("completion_queue_reaper_reaped")
+        self.record_completion_signal(test)
+
+    def _recordUnexpectedCompletionReap(self, pid, wait_status):
+        """Remember one unexpectedly reaped child for end-of-run warnings."""
+        observed_us = time.time_ns() // 1000
+        if os.WIFEXITED(wait_status):
+            outcome = "exit %d" % os.WEXITSTATUS(wait_status)
+        elif os.WIFSIGNALED(wait_status):
+            outcome = "signal %d" % os.WTERMSIG(wait_status)
+        else:
+            outcome = "wait_status %d" % wait_status
+        sample = {
+            "pid": pid,
+            "wait_status": wait_status,
+            "outcome": outcome,
+            "observed_us": observed_us,
+        }
+        with self._unexpected_reaps_lock:
+            self._unexpected_reaps_count += 1
+            if len(self._unexpected_reaps) < 8:
+                self._unexpected_reaps.append(sample)
+            else:
+                self._unexpected_reaps_dropped += 1
+
+    def _unexpectedReapsSnapshot(self):
+        """Return a snapshot of unexpected completion-reaper activity."""
+        with self._unexpected_reaps_lock:
+            return {
+                "count": self._unexpected_reaps_count,
+                "samples": list(self._unexpected_reaps),
+                "dropped": self._unexpected_reaps_dropped,
+            }
+
+    def logCompletionWarnings(self, logger):
+        """Print end-of-run warnings for suspicious queue-reaper events."""
+        snapshot = self._unexpectedReapsSnapshot()
+        if snapshot["count"] <= 0:
+            logger(
+                "WARNING: reap has a hypothetical race condition, but you dodged it!"
+                " Use queue as your completion detector if you want to stop living on the edge."
+            )
+            return
+        logger(
+            "WARNING: completion_queue reaped %d child process(es) that were not "
+            "registered ATS tests. This indicates the queue-mode reaper hit the "
+            "known waitpid(-1) race and may have consumed another ATS subprocess "
+            "exit status. This is especially an issue if wait_status!=0 for the pid." % snapshot["count"]
+        )
+        for sample in snapshot["samples"]:
+            logger(
+                "WARNING: unexpected reaped pid=%d outcome=%s wait_status=%d observed_us=%d"
+                % (
+                    sample["pid"],
+                    sample["outcome"],
+                    sample["wait_status"],
+                    sample["observed_us"],
+                )
+            )
+        if snapshot["dropped"]:
+            logger(
+                "WARNING: %d additional unexpected reaped child event(s) were not "
+                "listed individually." % snapshot["dropped"]
+            )
 
     def _reaper_loop(self):
         """Reap registered queue-mode children and enqueue their completions."""
@@ -73,21 +159,7 @@ class CompletionQueueCompletionDetector(CompletionDetector):
                 time.sleep(0.01)
                 continue
 
-            with self._reaper_condition:
-                test = self._registered_tests_by_pid.pop(pid, None)
-
-            if test is None:
-                machine._incrementCompletionStat("completion_queue_reaper_unknown_pid")
-                continue
-
-            child = getattr(test, "child", None)
-            if child is None:
-                machine._incrementCompletionStat("completion_queue_reaper_missing_child")
-                continue
-
-            child.returncode = self._wait_status_to_returncode(wait_status)
-            machine._incrementCompletionStat("completion_queue_reaper_reaped")
-            self.record_completion_signal(test)
+            self._handle_reaped_pid(pid, wait_status)
 
     def completion_drain_limit(self):
         """Return the configured maximum completions drained per wakeup.

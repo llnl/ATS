@@ -145,3 +145,7 @@ class LegacyPollCompletionDetector(CompletionDetector):
         self.poll_running_tests(
             allow_running_checks=True,
         )
+
+    def logCompletionWarnings(self, logger):
+        """Legacy polling has no detector-specific completion warnings."""
+        del logger

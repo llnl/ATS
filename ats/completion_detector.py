@@ -99,6 +99,17 @@ class CompletionDetector(ABC):
         return False
 
     @abstractmethod
+    def logCompletionWarnings(self, logger):
+        """Print any detector-specific end-of-run completion warnings.
+
+        Args:
+            logger (callable): Logging function compatible with ``ats.log.log``.
+
+        Returns:
+            None: Implementations may emit zero or more warnings.
+        """
+
+    @abstractmethod
     def check_running(self):
         """Update machine running state according to one detector strategy.
 

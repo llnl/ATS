@@ -315,6 +315,8 @@ class AtsManager(object):
             log("""ATS SUMMARY %s""" % datestamp(long_format=True), echo=True)
             successful_run = self.summary(log)
             self._summary2(log)
+            if hasattr(self, "machine"):
+                self.machine._completionDetector.logCompletionWarnings(log)
         return successful_run
 
     def finalBanner(self):

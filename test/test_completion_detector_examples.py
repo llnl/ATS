@@ -233,6 +233,52 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         self.assertEqual(machine.health_scan_calls, 1)
         self.assertEqual(machine.running, [still_running])
 
+    def test_completion_queue_records_unexpected_reaped_children(self):
+        """Queue mode should record when waitpid reaps a non-test child."""
+        machine = _DetectorMachineStub()
+        detector = CompletionQueueCompletionDetector(machine)
+
+        detector._handle_reaped_pid(4242, 0)
+
+        self.assertEqual(machine.stats["completion_queue_reaper_unknown_pid"], 1)
+        snapshot = detector._unexpectedReapsSnapshot()
+        self.assertEqual(snapshot["count"], 1)
+        self.assertEqual(snapshot["samples"][0]["pid"], 4242)
+        self.assertEqual(snapshot["samples"][0]["outcome"], "exit 0")
+
+    def test_completion_queue_logs_unexpected_completion_reap_warning(self):
+        """Queue detector should summarize unexpected reaper events at end of run."""
+        machine = _DetectorMachineStub()
+        detector = CompletionQueueCompletionDetector(machine)
+        messages = []
+
+        def collect(message, **kwargs):
+            del kwargs
+            messages.append(message)
+
+        detector._recordUnexpectedCompletionReap(111, 0)
+        detector._recordUnexpectedCompletionReap(222, 9)
+        detector.logCompletionWarnings(collect)
+
+        self.assertEqual(len(messages), 3)
+        self.assertIn("completion_queue reaped 2 child process(es)", messages[0])
+        self.assertIn("pid=111", messages[1])
+        self.assertIn("outcome=exit 0", messages[1])
+        self.assertIn("pid=222", messages[2])
+        self.assertIn("outcome=signal 9", messages[2])
+
+    def test_legacy_detector_has_no_completion_warning_output(self):
+        """Legacy detector should satisfy the warning interface with a no-op."""
+        machine = Machine("example", 1, completion_detection_mode="legacy_poll")
+        messages = []
+
+        def collect(message, **kwargs):
+            del kwargs
+            messages.append(message)
+
+        machine._completionDetector.logCompletionWarnings(collect)
+        self.assertEqual(messages, [])
+
 
 if __name__ == "__main__":
     unittest.main()
