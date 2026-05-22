@@ -329,7 +329,7 @@ class CompletionQueueCompletionDetector(CompletionDetector):
                 machine._incrementCompletionStat("_pollQueuedCompletionTests_completed")
             else:
                 result_kind = "selected_none_completed"
-            machine._incrementCompletionStat("_pollQueuedCompletionTests_selected_none_completed")
+                machine._incrementCompletionStat("_pollQueuedCompletionTests_selected_none_completed")
             return completed
         finally:
             machine._recordCompletionInternalSpan(

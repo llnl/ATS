@@ -469,11 +469,13 @@ class MachineCore(object):
             test.ats_returncode_observed_us = time.time_ns() // 1000
         test.setEndDateTime()
         test.statusCode = test.child.returncode
+        # If the user set ignoreReturnCode to True then set statusCode to 0.
         ignoreReturnCode  = test.options.get('ignoreReturnCode', False)
         if ignoreReturnCode:
             test.statusCode = 0
         if test.statusCode == 0:
             status = PASSED
+        # This checks for flux timeouts since ATS' method for determining timeouts doesnt work with flux
         elif "flux" in configuration.MACHINE_TYPE and test.statusCode == 142:
             # Flux reports scheduler-enforced timeouts as return code 142.
             status = TIMEDOUT

@@ -62,9 +62,9 @@ ATS ships three detector types:
 * ``ats.completion_queue.CompletionQueueCompletionDetector`` owns child reaping
   with a dedicated ``waitpid`` reaper and records completed tests into a queue;
 * ``ats.completion_queue_simple.CompletionQueueSimpleCompletionDetector``
-  preserves the original watcher-thread-per-child queue strategy;
+  spawns a thread per active running test to notice when the test is completed
 * ``ats.completion_legacy_poll.LegacyPollCompletionDetector`` preserves the
-  plain sleep-then-poll behavior from the ``ale3d`` ATS branch.
+  legacy sleep-then-poll behavior
 
 The normalizer also accepts short aliases:
 

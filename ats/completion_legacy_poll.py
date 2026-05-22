@@ -7,7 +7,7 @@ from ats.atsut import AtsError, PASSED
 
 
 class LegacyPollCompletionDetector(CompletionDetector):
-    """Preserve the plain ATS polling behavior from the ``ale3d`` branch."""
+    """Legacy polling behavior."""
 
     mode_name = "legacy_poll"
 
