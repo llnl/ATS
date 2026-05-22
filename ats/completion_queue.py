@@ -11,14 +11,36 @@ class CompletionQueueCompletionDetector(PollingCompletionDetector):
 
     mode_name = "completion_queue"
 
-    @property
-    def uses_completion_queue(self):
-        """Return whether completion signals should be queued.
+    def wait_for_completion_signal(self):
+        """Wait one polling interval for queued completion signals.
 
         Returns:
-            bool: Always ``True`` for the queued completion detector.
+            list: Always returns an empty list because queue-mode wakeups only
+            signal that queued completions may be available.
         """
-        return True
+        start_us = time.time_ns() // 1000
+        machine = self.machine
+        machine._incrementCompletionStat("_waitForCompletionSignal_called")
+        result_kind = "queue_event_wait"
+        try:
+            machine._incrementCompletionStat("_waitForCompletionSignal_queue_event_wait")
+            machine._completionEvent.wait(machine.naptime)
+            return []
+        finally:
+            machine._recordCompletionInternalSpan(
+                "_waitForCompletionSignal",
+                start_us,
+                time.time_ns() // 1000,
+                metadata={
+                    "mode": getattr(machine, "completion_detection_mode", ""),
+                    "running_count": len(machine.running),
+                    "registered": False,
+                    "registered_count": 0,
+                    "ready_count": 0,
+                    "used_queue_event_wait": True,
+                    "result": result_kind,
+                },
+            )
 
     def check_running(self):
         """Advance machine state by draining the queued completion set first.

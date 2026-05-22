@@ -9,15 +9,6 @@ from ats.completion_detector import CompletionDetector
 class PollingCompletionDetector(CompletionDetector):
     """Shared polling helpers used by ATS completion detectors."""
 
-    @property
-    def uses_completion_queue(self):
-        """Return whether completion signals should be queued.
-
-        Returns:
-            bool: ``True`` when signals should be enqueued for later draining.
-        """
-        return False
-
     def completion_drain_limit(self):
         """Return the configured maximum completions drained per wakeup.
 
@@ -50,44 +41,6 @@ class PollingCompletionDetector(CompletionDetector):
         Returns:
             None: Legacy polling does not need detector-specific cleanup.
         """
-
-    def wait_for_completion_signal(self):
-        """Wait for one scheduler polling interval.
-
-        Returns:
-            list: Always returns an empty list for polling-only waits.
-        """
-        start_us = time.time_ns() // 1000
-        machine = self.machine
-        machine._incrementCompletionStat("_waitForCompletionSignal_called")
-        used_queue_event_wait = False
-        result_kind = "sleep_fallback"
-        try:
-            if self.uses_completion_queue:
-                used_queue_event_wait = True
-                result_kind = "queue_event_wait"
-                machine._incrementCompletionStat("_waitForCompletionSignal_queue_event_wait")
-                machine._completionEvent.wait(machine.naptime)
-                return []
-
-            machine._incrementCompletionStat("_waitForCompletionSignal_sleep_fallback")
-            time.sleep(machine.naptime)
-            return []
-        finally:
-            machine._recordCompletionInternalSpan(
-                "_waitForCompletionSignal",
-                start_us,
-                time.time_ns() // 1000,
-                metadata={
-                    "mode": getattr(machine, "completion_detection_mode", ""),
-                    "running_count": len(machine.running),
-                    "registered": False,
-                    "registered_count": 0,
-                    "ready_count": 0,
-                    "used_queue_event_wait": bool(used_queue_event_wait),
-                    "result": result_kind,
-                },
-            )
 
     def poll_running_tests(
         self,
