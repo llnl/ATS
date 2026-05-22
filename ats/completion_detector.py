@@ -1,9 +1,15 @@
 """Completion-detection strategy base class and factory helpers."""
 
 from abc import ABC, abstractmethod
-import time
 
-from ats.atsut import AtsError, PASSED
+from ats.atsut import AtsError
+
+
+_COMPLETION_DETECTION_MODE_ALIASES = {
+    "poll": "legacy_poll",
+    "reap": "completion_queue",
+    "queue": "completion_queue_simple",
+}
 
 
 def normalize_completion_detection_mode(mode):
@@ -16,7 +22,8 @@ def normalize_completion_detection_mode(mode):
         str: Normalized lowercase mode name, defaulting to
         ``"completion_queue"``.
     """
-    return str(mode or "completion_queue").strip().lower() or "completion_queue"
+    normalized_mode = str(mode or "completion_queue").strip().lower() or "completion_queue"
+    return _COMPLETION_DETECTION_MODE_ALIASES.get(normalized_mode, normalized_mode)
 
 
 def _validate_completion_detection_mode_for_machine(machine, normalized_mode):
@@ -35,13 +42,13 @@ def _validate_completion_detection_mode_for_machine(machine, normalized_mode):
     machine_class = machine.__class__.__name__
     machine_module = machine.__class__.__module__
     if (
-        normalized_mode == "completion_queue"
+        normalized_mode in ("completion_queue", "completion_queue_simple")
         and machine_class == "FluxDirect"
         and machine_module.endswith("flux_direct")
     ):
         raise AtsError(
-            "completion_detection_mode='completion_queue' is unsupported for "
-            "FluxDirect. Use 'legacy_poll' for this experimental machine."
+            "queue-based completion detection is unsupported for FluxDirect. "
+            "Use 'legacy_poll' or its alias 'poll' for this experimental machine."
         )
 
 
@@ -119,11 +126,16 @@ def create_completion_detector(machine, mode):
         from ats.completion_queue import CompletionQueueCompletionDetector
 
         return CompletionQueueCompletionDetector(machine)
+    if normalized_mode == "completion_queue_simple":
+        from ats.completion_queue_simple import CompletionQueueSimpleCompletionDetector
+
+        return CompletionQueueSimpleCompletionDetector(machine)
     if normalized_mode == "legacy_poll":
         from ats.completion_legacy_poll import LegacyPollCompletionDetector
 
         return LegacyPollCompletionDetector(machine)
     raise AtsError(
         "Unknown completion detection mode %r. Expected one of: "
-        "'completion_queue', 'legacy_poll'." % mode
+        "'completion_queue', 'completion_queue_simple', 'legacy_poll' "
+        "(aliases: 'reap', 'queue', 'poll')." % mode
     )

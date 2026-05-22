@@ -57,12 +57,20 @@ The detector keeps strategy choice out of ``MachineCore.checkRunning()`` while
 reusing the same machine-owned helpers for completion queues, polling, and
 aggregated completion statistics.
 
-ATS ships two detector types:
+ATS ships three detector types:
 
-* ``ats.completion_queue.CompletionQueueCompletionDetector`` records signaled
-  completions into a queue and drains only those tests;
+* ``ats.completion_queue.CompletionQueueCompletionDetector`` owns child reaping
+  with a dedicated ``waitpid`` reaper and records completed tests into a queue;
+* ``ats.completion_queue_simple.CompletionQueueSimpleCompletionDetector``
+  preserves the original watcher-thread-per-child queue strategy;
 * ``ats.completion_legacy_poll.LegacyPollCompletionDetector`` preserves the
   plain sleep-then-poll behavior from the ``ale3d`` ATS branch.
+
+The normalizer also accepts short aliases:
+
+* ``reap`` -> ``completion_queue``
+* ``queue`` -> ``completion_queue_simple``
+* ``poll`` -> ``legacy_poll``
 
 The ATS initialization path accepts ``completion_detection_mode`` and passes it
 through machine construction:

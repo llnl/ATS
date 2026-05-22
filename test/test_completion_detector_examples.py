@@ -12,6 +12,7 @@ from ats.atsut import AtsError, PASSED
 from ats.completion_queue import CompletionQueueCompletionDetector
 from ats.completion_detector import create_completion_detector
 from ats.completion_legacy_poll import LegacyPollCompletionDetector
+from ats.completion_queue_simple import CompletionQueueSimpleCompletionDetector
 from ats.machines import Machine
 
 if not hasattr(configuration, "options"):
@@ -94,6 +95,20 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             LegacyPollCompletionDetector,
         )
 
+    def test_constructor_argument_selects_simple_queue_completion_detector(self):
+        """Constructor selection should support the simple queue detector."""
+        machine = Machine(
+            "example",
+            1,
+            completion_detection_mode="completion_queue_simple",
+        )
+
+        self.assertEqual(machine.completion_detection_mode, "completion_queue_simple")
+        self.assertIsInstance(
+            machine._completionDetector,
+            CompletionQueueSimpleCompletionDetector,
+        )
+
     def test_completion_queue_is_the_default_when_no_mode_is_requested(self):
         """Default machine construction should preserve the queue detector."""
         machine = Machine("example", 1)
@@ -112,6 +127,23 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
 
         with self.assertRaisesRegex(AtsError, "unsupported for FluxDirect"):
             create_completion_detector(FluxDirect(), "completion_queue")
+
+        with self.assertRaisesRegex(AtsError, "unsupported for FluxDirect"):
+            create_completion_detector(FluxDirect(), "completion_queue_simple")
+
+    def test_short_aliases_select_expected_detectors(self):
+        """Short aliases should normalize to the expected detector types."""
+        machine = Machine("example", 1, completion_detection_mode="poll")
+        self.assertEqual(machine.completion_detection_mode, "legacy_poll")
+        self.assertIsInstance(machine._completionDetector, LegacyPollCompletionDetector)
+
+        machine = Machine("example", 1, completion_detection_mode="reap")
+        self.assertEqual(machine.completion_detection_mode, "completion_queue")
+        self.assertIsInstance(machine._completionDetector, CompletionQueueCompletionDetector)
+
+        machine = Machine("example", 1, completion_detection_mode="queue")
+        self.assertEqual(machine.completion_detection_mode, "completion_queue_simple")
+        self.assertIsInstance(machine._completionDetector, CompletionQueueSimpleCompletionDetector)
 
     def test_queue_mode_does_not_call_child_poll(self):
         """Queue mode should trust reaper-populated return codes."""
@@ -133,6 +165,20 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             "example",
             1,
             completion_detection_mode="legacy_poll",
+        )
+        child = Mock()
+        child.returncode = 0
+        test = SimpleNamespace(child=child)
+
+        self.assertEqual(machine._pollChild(test), 0)
+        child.poll.assert_called_once_with()
+
+    def test_simple_queue_mode_still_calls_child_poll(self):
+        """Simple queue mode should still use Popen.poll() for completion checks."""
+        machine = Machine(
+            "example",
+            1,
+            completion_detection_mode="completion_queue_simple",
         )
         child = Mock()
         child.returncode = 0
