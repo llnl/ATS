@@ -177,9 +177,7 @@ class CompletionQueueCompletionDetector(CompletionDetector):
     def wait_for_completion_signal(self):
         """Wait one polling interval for queued completion signals.
 
-        Returns:
-            list: Always returns an empty list because queue-mode wakeups only
-            signal that queued completions may be available.
+        Returns nothing
         """
         start_us = time.time_ns() // 1000
         machine = self.machine
@@ -188,7 +186,6 @@ class CompletionQueueCompletionDetector(CompletionDetector):
         try:
             machine._incrementCompletionStat("_waitForCompletionSignal_queue_event_wait")
             machine._completionEvent.wait(machine.naptime)
-            return []
         finally:
             machine._recordCompletionInternalSpan(
                 "_waitForCompletionSignal",

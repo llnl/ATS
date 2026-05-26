@@ -475,6 +475,7 @@ class MachineCore(object):
             test.statusCode = 0
         if test.statusCode == 0:
             status = PASSED
+        # TODO: move this machine specific check to flux-specific machine files
         # This checks for flux timeouts since ATS' method for determining timeouts doesnt work with flux
         elif "flux" in configuration.MACHINE_TYPE and test.statusCode == 142:
             # Flux reports scheduler-enforced timeouts as return code 142.
@@ -544,6 +545,7 @@ class MachineCore(object):
         self.testEnded(test, status)
         return True
 
+    # TODO: move Slurm specific checks to slurm machine file
     def _detectRunningSlurmError(self, test):
         """Check a still-running test for known SLURM launch/runtime failures.
 
