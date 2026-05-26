@@ -177,7 +177,9 @@ class CompletionQueueCompletionDetector(CompletionDetector):
     def wait_for_completion_signal(self):
         """Wait one polling interval for queued completion signals.
 
-        Returns nothing
+        Returns:
+            None: Will have waited for {machine.naptime} seconds, and updated appropriate
+                  statistics and timing data.
         """
         start_us = time.time_ns() // 1000
         machine = self.machine
