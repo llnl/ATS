@@ -7,7 +7,7 @@ import time
 from ats.atsut import AtsError, PASSED
 from ats.completion_detector import CompletionDetector
 
-
+# TODO: When we move to RHEL 5 or RHEL 6, migrate this to use pidfd instead of a reaper thread strategy.
 class CompletionQueueCompletionDetector(CompletionDetector):
     """Drain explicitly signaled completions from a machine-owned queue."""
 
