@@ -304,8 +304,11 @@ class AtsManager(object):
         successful_run = True
 
         if self.testlist:
-            log("=================================================\n"
-                "ATS RESULTS %s""" % datestamp(long_format=True), echo=True)
+            log(
+                "=================================================\n"
+                "ATS RESULTS %s" % datestamp(long_format=True),
+                echo=True,
+            )
             log('-------------------------------------------------',
                 echo = True)
             self.report()

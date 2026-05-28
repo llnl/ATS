@@ -1,4 +1,4 @@
-"""Legacy polling detector for ATS machines."""
+"""Polling completion detector for ATS machines."""
 
 import time
 
@@ -6,10 +6,10 @@ from ats.completion_detector import CompletionDetector
 from ats.atsut import AtsError, PASSED
 
 
-class LegacyPollCompletionDetector(CompletionDetector):
-    """Legacy polling behavior."""
+class PollingCompletionDetector(CompletionDetector):
+    """Sleep-then-poll completion behavior."""
 
-    mode_name = "legacy_poll"
+    mode_name = "poll"
 
     def preserve_new_running_tests(self, remaining, seen_ids):
         """Keep tests appended to ``machine.running`` during completion callbacks.
@@ -33,19 +33,13 @@ class LegacyPollCompletionDetector(CompletionDetector):
     def poll_running_tests(
         self,
         allow_running_checks,
-        prioritized=None,
-        stop_after_completion=False,
         completion_limit=None,
     ):
-        """Poll running tests, optionally prioritizing likely completions.
+        """Poll running tests in scheduler order.
 
         Args:
             allow_running_checks (bool): When ``False``, skip timeout and
                 runtime error checks for children that have not yet exited.
-            prioritized (iterable|None): Optional running-test candidates to
-                check before the rest of ``machine.running``.
-            stop_after_completion (bool): When ``True``, stop after the first
-                completed test is handled.
             completion_limit (int|None): Maximum number of completions to
                 process before returning control to the scheduler.
 
@@ -62,27 +56,12 @@ class LegacyPollCompletionDetector(CompletionDetector):
         else:
             machine._incrementCompletionStat("_pollRunningTests_allow_running_checks_false")
 
-        prioritized = list(prioritized or [])
-        prioritized_count = len(prioritized)
         ordered_count = 0
         completed = 0
         result_kind = "completed_none"
         try:
-            ordered = []
-            seen_ids = set()
-            for test in prioritized:
-                test_id = id(test)
-                if test_id in seen_ids:
-                    continue
-                ordered.append(test)
-                seen_ids.add(test_id)
-            for test in machine.running:
-                test_id = id(test)
-                if test_id in seen_ids:
-                    continue
-                ordered.append(test)
-                seen_ids.add(test_id)
-
+            ordered = list(machine.running)
+            seen_ids = {id(test) for test in ordered}
             ordered_count = len(ordered)
             machine._incrementCompletionStat("_pollRunningTests_total_ordered", ordered_count)
 
@@ -95,13 +74,11 @@ class LegacyPollCompletionDetector(CompletionDetector):
                 completed += 1
                 if test.status is not PASSED and configuration.options.oneFailure:
                     raise AtsError("Test failed in oneFailure mode.")
-                if stop_after_completion or (
-                    completion_limit is not None and completed >= completion_limit
-                ):
+                if completion_limit is not None and completed >= completion_limit:
                     remaining.extend(ordered[index + 1:])
                     self.preserve_new_running_tests(remaining, seen_ids)
                     machine.running = remaining
-                    result_kind = "stopped_after_completion"
+                    result_kind = "stopped_after_completion_limit"
                     machine._incrementCompletionStat("_pollRunningTests_stopped_after_completion")
                     machine._incrementCompletionStat("_pollRunningTests_total_completed", completed)
                     return completed
@@ -123,9 +100,7 @@ class LegacyPollCompletionDetector(CompletionDetector):
                 metadata={
                     "mode": getattr(machine, "completion_detection_mode", ""),
                     "allow_running_checks": bool(allow_running_checks),
-                    "prioritized_count": prioritized_count,
                     "ordered_count": ordered_count,
-                    "stop_after_completion": bool(stop_after_completion),
                     "completion_limit": completion_limit,
                     "completed_count": completed,
                     "result": result_kind,
@@ -147,5 +122,5 @@ class LegacyPollCompletionDetector(CompletionDetector):
         )
 
     def logCompletionWarnings(self, logger):
-        """Legacy polling has no detector-specific completion warnings."""
-        del logger
+        """Polling mode has no detector-specific completion warnings."""
+        return None

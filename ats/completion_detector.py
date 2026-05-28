@@ -5,13 +5,6 @@ from abc import ABC, abstractmethod
 from ats.atsut import AtsError
 
 
-_COMPLETION_DETECTION_MODE_ALIASES = {
-    "poll": "legacy_poll",
-    "reap": "completion_queue",
-    "queue": "completion_queue_simple",
-}
-
-
 def normalize_completion_detection_mode(mode):
     """Normalize a completion-detection mode string.
 
@@ -20,10 +13,9 @@ def normalize_completion_detection_mode(mode):
 
     Returns:
         str: Normalized lowercase mode name, defaulting to
-        ``"completion_queue"``.
+        ``"waitpid_reaper"``.
     """
-    normalized_mode = str(mode or "completion_queue").strip().lower() or "completion_queue"
-    return _COMPLETION_DETECTION_MODE_ALIASES.get(normalized_mode, normalized_mode)
+    return str(mode or "waitpid_reaper").strip().lower() or "waitpid_reaper"
 
 
 def _validate_completion_detection_mode_for_machine(machine, normalized_mode):
@@ -42,13 +34,13 @@ def _validate_completion_detection_mode_for_machine(machine, normalized_mode):
     machine_class = machine.__class__.__name__
     machine_module = machine.__class__.__module__
     if (
-        normalized_mode in ("completion_queue", "completion_queue_simple")
+        normalized_mode in ("waitpid_reaper", "per_test_watcher")
         and machine_class == "FluxDirect"
         and machine_module.endswith("flux_direct")
     ):
         raise AtsError(
-            "queue-based completion detection is unsupported for FluxDirect. "
-            "Use 'legacy_poll' or its alias 'poll' for this experimental machine."
+            "threaded completion detection is unsupported for FluxDirect. "
+            "Use 'poll' for this experimental machine."
         )
 
 
@@ -69,7 +61,7 @@ class CompletionDetector(ABC):
         """
         self.machine = machine
 
-    def prepare_for_launch(self, test):
+    def register_launched_test(self, test):
         """Prepare one launched test for detector-specific completion work.
 
         Args:
@@ -80,7 +72,7 @@ class CompletionDetector(ABC):
             setup.
         """
 
-    def close_for_test(self, test):
+    def unregister_finished_test(self, test):
         """Release detector-owned state associated with one finished test.
 
         Args:
@@ -133,20 +125,19 @@ def create_completion_detector(machine, mode):
     """
     normalized_mode = normalize_completion_detection_mode(mode)
     _validate_completion_detection_mode_for_machine(machine, normalized_mode)
-    if normalized_mode == "completion_queue":
-        from ats.completion_queue import CompletionQueueCompletionDetector
+    if normalized_mode == "waitpid_reaper":
+        from ats.completion_queue import WaitpidReaperCompletionDetector
 
-        return CompletionQueueCompletionDetector(machine)
-    if normalized_mode == "completion_queue_simple":
-        from ats.completion_queue_simple import CompletionQueueSimpleCompletionDetector
+        return WaitpidReaperCompletionDetector(machine)
+    if normalized_mode == "per_test_watcher":
+        from ats.completion_queue_simple import PerTestWatcherCompletionDetector
 
-        return CompletionQueueSimpleCompletionDetector(machine)
-    if normalized_mode == "legacy_poll":
-        from ats.completion_legacy_poll import LegacyPollCompletionDetector
+        return PerTestWatcherCompletionDetector(machine)
+    if normalized_mode == "poll":
+        from ats.completion_legacy_poll import PollingCompletionDetector
 
-        return LegacyPollCompletionDetector(machine)
+        return PollingCompletionDetector(machine)
     raise AtsError(
         "Unknown completion detection mode %r. Expected one of: "
-        "'completion_queue', 'completion_queue_simple', 'legacy_poll' "
-        "(aliases: 'reap', 'queue', 'poll')." % mode
+        "'waitpid_reaper', 'per_test_watcher', 'poll'." % mode
     )

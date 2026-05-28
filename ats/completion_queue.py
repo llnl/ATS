@@ -8,10 +8,10 @@ from ats.atsut import AtsError, PASSED
 from ats.completion_detector import CompletionDetector
 
 # TODO: When we move to RHEL 5 or RHEL 6, migrate this to use pidfd instead of a reaper thread strategy.
-class CompletionQueueCompletionDetector(CompletionDetector):
+class WaitpidReaperCompletionDetector(CompletionDetector):
     """Drain explicitly signaled completions from a machine-owned queue."""
 
-    mode_name = "completion_queue"
+    mode_name = "waitpid_reaper"
 
     def __init__(self, machine):
         """Initialize queue-mode reaper state for one ATS machine.
@@ -109,12 +109,12 @@ class CompletionQueueCompletionDetector(CompletionDetector):
         snapshot = self._unexpectedReapsSnapshot()
         if snapshot["count"] <= 0:
             logger(
-                "WARNING: reap has a hypothetical race condition, but you dodged it!"
-                " Use queue as your completion detector if you want to stop living on the edge."
+                "WARNING: waitpid_reaper did not hit its known waitpid(-1) race in this run, "
+                "but the risk remains. Use per_test_watcher if you need the safer path."
             )
             return
         logger(
-            "WARNING: completion_queue reaped %d child process(es) that were not "
+            "WARNING: waitpid_reaper reaped %d child process(es) that were not "
             "registered ATS tests. This indicates the queue-mode reaper hit the "
             "known waitpid(-1) race and may have consumed another ATS subprocess "
             "exit status. This is especially an issue if wait_status!=0 for the pid." % snapshot["count"]
@@ -204,7 +204,7 @@ class CompletionQueueCompletionDetector(CompletionDetector):
                 },
             )
 
-    def prepare_for_launch(self, test):
+    def register_launched_test(self, test):
         """Register one launched child with the queued completion reaper.
 
         Args:
@@ -224,7 +224,7 @@ class CompletionQueueCompletionDetector(CompletionDetector):
             self._reaper_condition.notify()
         self.machine._incrementCompletionStat("completion_queue_reaper_registered")
 
-    def close_for_test(self, test):
+    def unregister_finished_test(self, test):
         """Clear reaper bookkeeping for one finished test.
 
         Args:
@@ -270,8 +270,6 @@ class CompletionQueueCompletionDetector(CompletionDetector):
 
         Args:
             test: ATS test object associated with the completion signal.
-            observed_us (int|None): Signal timestamp in microseconds. Uses the
-                current time when omitted.
 
         Returns:
             None: Internal timestamps, queue state, and statistics are updated.

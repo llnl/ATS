@@ -9,10 +9,10 @@ from unittest.mock import Mock
 
 from ats import configuration
 from ats.atsut import AtsError, PASSED
-from ats.completion_queue import CompletionQueueCompletionDetector
+from ats.completion_queue import WaitpidReaperCompletionDetector
 from ats.completion_detector import create_completion_detector
-from ats.completion_legacy_poll import LegacyPollCompletionDetector
-from ats.completion_queue_simple import CompletionQueueSimpleCompletionDetector
+from ats.completion_legacy_poll import PollingCompletionDetector
+from ats.completion_queue_simple import PerTestWatcherCompletionDetector
 from ats.machines import Machine
 
 if not hasattr(configuration, "options"):
@@ -33,7 +33,7 @@ class _DetectorMachineStub:
     def __init__(self, naptime=0.01):
         self.naptime = naptime
         self.running = []
-        self.completion_detection_mode = "completion_queue"
+        self.completion_detection_mode = "waitpid_reaper"
         self.completion_fast_path_drain_limit = 128
         self._completionEvent = threading.Event()
         self._completionQueue = deque()
@@ -72,13 +72,13 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         machine = Machine(
             "example",
             1,
-            completion_detection_mode="completion_queue",
+            completion_detection_mode="waitpid_reaper",
         )
 
-        self.assertEqual(machine.completion_detection_mode, "completion_queue")
+        self.assertEqual(machine.completion_detection_mode, "waitpid_reaper")
         self.assertIsInstance(
             machine._completionDetector,
-            CompletionQueueCompletionDetector,
+            WaitpidReaperCompletionDetector,
         )
 
     def test_constructor_argument_selects_legacy_completion_detector(self):
@@ -86,13 +86,13 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         machine = Machine(
             "example",
             1,
-            completion_detection_mode="legacy_poll",
+            completion_detection_mode="poll",
         )
 
-        self.assertEqual(machine.completion_detection_mode, "legacy_poll")
+        self.assertEqual(machine.completion_detection_mode, "poll")
         self.assertIsInstance(
             machine._completionDetector,
-            LegacyPollCompletionDetector,
+            PollingCompletionDetector,
         )
 
     def test_constructor_argument_selects_simple_queue_completion_detector(self):
@@ -100,57 +100,56 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         machine = Machine(
             "example",
             1,
-            completion_detection_mode="completion_queue_simple",
+            completion_detection_mode="per_test_watcher",
         )
 
-        self.assertEqual(machine.completion_detection_mode, "completion_queue_simple")
+        self.assertEqual(machine.completion_detection_mode, "per_test_watcher")
         self.assertIsInstance(
             machine._completionDetector,
-            CompletionQueueSimpleCompletionDetector,
+            PerTestWatcherCompletionDetector,
         )
 
     def test_completion_queue_is_the_default_when_no_mode_is_requested(self):
         """Default machine construction should preserve the queue detector."""
         machine = Machine("example", 1)
 
-        self.assertEqual(machine.completion_detection_mode, "completion_queue")
+        self.assertEqual(machine.completion_detection_mode, "waitpid_reaper")
         self.assertIsInstance(
             machine._completionDetector,
-            CompletionQueueCompletionDetector,
+            WaitpidReaperCompletionDetector,
         )
 
-    def test_flux_direct_rejects_completion_queue_mode(self):
+    def test_flux_direct_rejects_threaded_completion_modes(self):
         """FluxDirect should reject the queued completion detector mode."""
 
         class FluxDirect:
             __module__ = "ats.atsMachines.FutureMachines.flux_direct"
 
         with self.assertRaisesRegex(AtsError, "unsupported for FluxDirect"):
-            create_completion_detector(FluxDirect(), "completion_queue")
+            create_completion_detector(FluxDirect(), "waitpid_reaper")
 
         with self.assertRaisesRegex(AtsError, "unsupported for FluxDirect"):
-            create_completion_detector(FluxDirect(), "completion_queue_simple")
+            create_completion_detector(FluxDirect(), "per_test_watcher")
 
-    def test_short_aliases_select_expected_detectors(self):
-        """Short aliases should normalize to the expected detector types."""
+    def test_old_detector_names_are_rejected(self):
+        """Old detector names should no longer be accepted."""
         machine = Machine("example", 1, completion_detection_mode="poll")
-        self.assertEqual(machine.completion_detection_mode, "legacy_poll")
-        self.assertIsInstance(machine._completionDetector, LegacyPollCompletionDetector)
+        self.assertEqual(machine.completion_detection_mode, "poll")
+        self.assertIsInstance(machine._completionDetector, PollingCompletionDetector)
 
-        machine = Machine("example", 1, completion_detection_mode="reap")
-        self.assertEqual(machine.completion_detection_mode, "completion_queue")
-        self.assertIsInstance(machine._completionDetector, CompletionQueueCompletionDetector)
-
-        machine = Machine("example", 1, completion_detection_mode="queue")
-        self.assertEqual(machine.completion_detection_mode, "completion_queue_simple")
-        self.assertIsInstance(machine._completionDetector, CompletionQueueSimpleCompletionDetector)
+        with self.assertRaisesRegex(AtsError, "Unknown completion detection mode"):
+            Machine("example", 1, completion_detection_mode="legacy_poll")
+        with self.assertRaisesRegex(AtsError, "Unknown completion detection mode"):
+            Machine("example", 1, completion_detection_mode="completion_queue")
+        with self.assertRaisesRegex(AtsError, "Unknown completion detection mode"):
+            Machine("example", 1, completion_detection_mode="completion_queue_simple")
 
     def test_queue_mode_does_not_call_child_poll(self):
         """Queue mode should trust reaper-populated return codes."""
         machine = Machine(
             "example",
             1,
-            completion_detection_mode="completion_queue",
+            completion_detection_mode="waitpid_reaper",
         )
         child = Mock()
         child.returncode = 17
@@ -164,7 +163,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         machine = Machine(
             "example",
             1,
-            completion_detection_mode="legacy_poll",
+            completion_detection_mode="poll",
         )
         child = Mock()
         child.returncode = 0
@@ -178,7 +177,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         machine = Machine(
             "example",
             1,
-            completion_detection_mode="completion_queue_simple",
+            completion_detection_mode="per_test_watcher",
         )
         child = Mock()
         child.returncode = 0
@@ -190,7 +189,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
     def test_completion_queue_reaper_sets_child_returncode(self):
         """Queue-mode reaper should publish subprocess-style return codes."""
         machine = _DetectorMachineStub()
-        detector = CompletionQueueCompletionDetector(machine)
+        detector = WaitpidReaperCompletionDetector(machine)
         child = subprocess.Popen(
             [sys.executable, "-c", "import sys; sys.exit(7)"],
         )
@@ -200,7 +199,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             status=PASSED,
         )
 
-        detector.prepare_for_launch(test)
+        detector.register_launched_test(test)
         self.assertTrue(machine._completionEvent.wait(5.0))
 
         deadline = time.time() + 5.0
@@ -213,7 +212,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
     def test_completion_queue_drain_avoids_fallback_completion_rescan(self):
         """Queue mode should only finalize queued completions and still scan health."""
         machine = _DetectorMachineStub()
-        detector = CompletionQueueCompletionDetector(machine)
+        detector = WaitpidReaperCompletionDetector(machine)
         queued_test = SimpleNamespace(
             child=SimpleNamespace(returncode=0),
             ats_completion_signal_us=None,
@@ -236,7 +235,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
     def test_completion_queue_records_unexpected_reaped_children(self):
         """Queue mode should record when waitpid reaps a non-test child."""
         machine = _DetectorMachineStub()
-        detector = CompletionQueueCompletionDetector(machine)
+        detector = WaitpidReaperCompletionDetector(machine)
 
         detector._handle_reaped_pid(4242, 0)
 
@@ -249,7 +248,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
     def test_completion_queue_logs_unexpected_completion_reap_warning(self):
         """Queue detector should summarize unexpected reaper events at end of run."""
         machine = _DetectorMachineStub()
-        detector = CompletionQueueCompletionDetector(machine)
+        detector = WaitpidReaperCompletionDetector(machine)
         messages = []
 
         def collect(message, **kwargs):
@@ -261,7 +260,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         detector.logCompletionWarnings(collect)
 
         self.assertEqual(len(messages), 3)
-        self.assertIn("completion_queue reaped 2 child process(es)", messages[0])
+        self.assertIn("waitpid_reaper reaped 2 child process(es)", messages[0])
         self.assertIn("pid=111", messages[1])
         self.assertIn("outcome=exit 0", messages[1])
         self.assertIn("pid=222", messages[2])
@@ -269,7 +268,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
 
     def test_legacy_detector_has_no_completion_warning_output(self):
         """Legacy detector should satisfy the warning interface with a no-op."""
-        machine = Machine("example", 1, completion_detection_mode="legacy_poll")
+        machine = Machine("example", 1, completion_detection_mode="poll")
         messages = []
 
         def collect(message, **kwargs):

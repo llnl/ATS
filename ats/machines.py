@@ -28,7 +28,7 @@ class MachineCore(object):
 
         Args:
             completion_detection_mode (str|None): Requested completion-detector
-                mode. When omitted, ATS falls back to ``"completion_queue"``.
+                mode. When omitted, ATS falls back to ``"waitpid_reaper"``.
 
         Returns:
             None: Completion detector state and hooks are initialized.
@@ -110,7 +110,7 @@ class MachineCore(object):
 
         Args:
             completion_detection_mode (str|None): Requested detector mode. When
-                omitted, ATS falls back to ``"completion_queue"``.
+                omitted, ATS falls back to ``"waitpid_reaper"``.
 
         Returns:
             object: Newly created completion detector strategy instance.
@@ -438,6 +438,8 @@ class MachineCore(object):
         Returns:
             int: Number of running tests completed by health checks.
         """
+        # Work on a snapshot so completion callbacks can append to
+        # ``self.running`` without disturbing this scan.
         ordered = list(self.running)
         seen_ids = {id(test) for test in ordered}
         remaining = []
@@ -541,7 +543,7 @@ class MachineCore(object):
                 print(line)
                 print(line, file=outhandle)
 
-        self._completionDetector.close_for_test(test)
+        self._completionDetector.unregister_finished_test(test)
         self.testEnded(test, status)
         return True
 
@@ -966,7 +968,7 @@ The subprocess part of launch. Also the part that might fail.
                 else:
                     test.child = subprocess.Popen(test.commandList, cwd=test.directory, stdout = subprocess.PIPE, stderr=subprocess.STDOUT, env=E, stdin=testStdin)
 
-            self._completionDetector.prepare_for_launch(test)
+            self._completionDetector.register_launched_test(test)
             test.set(RUNNING, test.commandLine)
             self.running.append(test)
             self.numberTestsRunning += 1
