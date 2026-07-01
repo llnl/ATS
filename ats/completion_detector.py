@@ -126,15 +126,15 @@ def create_completion_detector(machine, mode):
     normalized_mode = normalize_completion_detection_mode(mode)
     _validate_completion_detection_mode_for_machine(machine, normalized_mode)
     if normalized_mode == "waitpid_reaper":
-        from ats.completion_queue import WaitpidReaperCompletionDetector
+        from ats.completion_waitpid_reaper import WaitpidReaperCompletionDetector
 
         return WaitpidReaperCompletionDetector(machine)
     if normalized_mode == "per_test_watcher":
-        from ats.completion_queue_simple import PerTestWatcherCompletionDetector
+        from ats.completion_per_test_watcher import PerTestWatcherCompletionDetector
 
         return PerTestWatcherCompletionDetector(machine)
     if normalized_mode == "poll":
-        from ats.completion_legacy_poll import PollingCompletionDetector
+        from ats.completion_poll import PollingCompletionDetector
 
         return PollingCompletionDetector(machine)
     raise AtsError(

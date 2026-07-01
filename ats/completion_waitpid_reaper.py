@@ -1,4 +1,4 @@
-"""Queued completion detector for ATS machines."""
+"""Waitpid-reaper completion detector for ATS machines."""
 
 import os
 import threading

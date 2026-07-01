@@ -1,8 +1,8 @@
-"""Queued completion detector using one watcher thread per child."""
+"""Per-test watcher completion detector for ATS machines."""
 
 import threading
 
-from ats.completion_queue import WaitpidReaperCompletionDetector
+from ats.completion_waitpid_reaper import WaitpidReaperCompletionDetector
 
 
 class PerTestWatcherCompletionDetector(WaitpidReaperCompletionDetector):

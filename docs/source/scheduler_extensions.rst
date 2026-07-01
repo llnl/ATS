@@ -59,15 +59,15 @@ aggregated completion statistics.
 
 ATS ships three detector types:
 
-* ``ats.completion_queue.WaitpidReaperCompletionDetector`` owns child reaping
+* ``ats.completion_waitpid_reaper.WaitpidReaperCompletionDetector`` owns child reaping
   with a dedicated ``waitpid`` reaper and records completed tests into a queue.
   It has the lowest steady-state overhead, but it still carries the known
   ``waitpid(-1)`` race and is unsupported for ``FluxDirect``.
-* ``ats.completion_queue_simple.PerTestWatcherCompletionDetector`` spawns one
+* ``ats.completion_per_test_watcher.PerTestWatcherCompletionDetector`` spawns one
   watcher thread per running test. That avoids the ``waitpid(-1)`` race, but
   it scales with the number of active children because each child keeps its own
   waiting thread.
-* ``ats.completion_legacy_poll.PollingCompletionDetector`` preserves the plain
+* ``ats.completion_poll.PollingCompletionDetector`` preserves the plain
   sleep-then-poll behavior. It is the simplest comparison baseline, but
   completion latency and polling work both scale with the scheduler interval.
 
