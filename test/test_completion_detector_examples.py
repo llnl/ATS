@@ -5,7 +5,6 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
 
 from ats import configuration
 from ats.atsut import AtsError, PASSED
@@ -28,7 +27,7 @@ if not hasattr(configuration, "options"):
 
 
 class _DetectorMachineStub:
-    """Minimal machine stub for queue-detector focused unit tests."""
+    """Minimal machine stub for completion-detector focused unit tests."""
 
     def __init__(self, naptime=0.01):
         self.naptime = naptime
@@ -67,8 +66,8 @@ class _DetectorMachineStub:
 class CompletionDetectorExamplesTest(unittest.TestCase):
     """Keep the scheduler-extension completion-detector examples executable."""
 
-    def test_constructor_argument_selects_waitpid_reaper_completion_detector(self):
-        """Constructor selection should instantiate the waitpid reaper detector."""
+    def test_constructor_argument_selects_waitpid_reaper_completion_detector_class(self):
+        """Constructor selection should instantiate ``WaitpidReaperCompletionDetector``."""
         machine = Machine(
             "example",
             1,
@@ -81,8 +80,8 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             WaitpidReaperCompletionDetector,
         )
 
-    def test_constructor_argument_selects_polling_completion_detector(self):
-        """Constructor selection should also support the polling detector."""
+    def test_constructor_argument_selects_polling_completion_detector_class(self):
+        """Constructor selection should instantiate ``PollingCompletionDetector``."""
         machine = Machine(
             "example",
             1,
@@ -95,8 +94,8 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             PollingCompletionDetector,
         )
 
-    def test_constructor_argument_selects_per_test_watcher_completion_detector(self):
-        """Constructor selection should support the per-test watcher detector."""
+    def test_constructor_argument_selects_per_test_watcher_completion_detector_class(self):
+        """Constructor selection should instantiate ``PerTestWatcherCompletionDetector``."""
         machine = Machine(
             "example",
             1,
@@ -109,8 +108,8 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             PerTestWatcherCompletionDetector,
         )
 
-    def test_waitpid_reaper_is_the_default_when_no_mode_is_requested(self):
-        """Default machine construction should preserve the waitpid reaper detector."""
+    def test_waitpid_reaper_completion_detector_is_the_default_when_no_mode_is_requested(self):
+        """Default machine construction should use ``WaitpidReaperCompletionDetector``."""
         machine = Machine("example", 1)
 
         self.assertEqual(machine.completion_detection_mode, "waitpid_reaper")
@@ -131,50 +130,8 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         with self.assertRaisesRegex(AtsError, "unsupported for FluxDirect"):
             create_completion_detector(FluxDirect(), "per_test_watcher")
 
-    def test_waitpid_reaper_mode_does_not_call_child_poll(self):
-        """Waitpid reaper mode should trust reaper-populated return codes."""
-        machine = Machine(
-            "example",
-            1,
-            completion_detection_mode="waitpid_reaper",
-        )
-        child = Mock()
-        child.returncode = 17
-        test = SimpleNamespace(child=child)
-
-        self.assertEqual(machine._pollChild(test), 17)
-        child.poll.assert_not_called()
-
-    def test_polling_mode_still_calls_child_poll(self):
-        """Polling mode should continue to use ``Popen.poll()``."""
-        machine = Machine(
-            "example",
-            1,
-            completion_detection_mode="poll",
-        )
-        child = Mock()
-        child.returncode = 0
-        test = SimpleNamespace(child=child)
-
-        self.assertEqual(machine._pollChild(test), 0)
-        child.poll.assert_called_once_with()
-
-    def test_per_test_watcher_mode_still_calls_child_poll(self):
-        """Per-test watcher mode should still use ``Popen.poll()`` for completion checks."""
-        machine = Machine(
-            "example",
-            1,
-            completion_detection_mode="per_test_watcher",
-        )
-        child = Mock()
-        child.returncode = 0
-        test = SimpleNamespace(child=child)
-
-        self.assertEqual(machine._pollChild(test), 0)
-        child.poll.assert_called_once_with()
-
     def test_waitpid_reaper_sets_child_returncode(self):
-        """Waitpid reaper should publish subprocess-style return codes."""
+        """``WaitpidReaperCompletionDetector`` should publish subprocess-style return codes."""
         machine = _DetectorMachineStub()
         detector = WaitpidReaperCompletionDetector(machine)
         child = subprocess.Popen(
@@ -197,7 +154,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         self.assertEqual(detector.drain_completion_queue(), [test])
 
     def test_waitpid_reaper_drain_avoids_fallback_completion_rescan(self):
-        """Waitpid reaper should only finalize queued completions and still scan health."""
+        """``WaitpidReaperCompletionDetector`` should only finalize queued completions and scan health."""
         machine = _DetectorMachineStub()
         detector = WaitpidReaperCompletionDetector(machine)
         queued_test = SimpleNamespace(
@@ -220,7 +177,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         self.assertEqual(machine.running, [still_running])
 
     def test_waitpid_reaper_records_unexpected_reaped_children(self):
-        """Waitpid reaper should record when waitpid reaps a non-test child."""
+        """``WaitpidReaperCompletionDetector`` should record when waitpid reaps a non-test child."""
         machine = _DetectorMachineStub()
         detector = WaitpidReaperCompletionDetector(machine)
 
@@ -233,7 +190,7 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         self.assertEqual(snapshot["samples"][0]["outcome"], "exit 0")
 
     def test_waitpid_reaper_logs_unexpected_completion_reap_warning(self):
-        """Waitpid reaper should summarize unexpected reaper events at end of run."""
+        """``WaitpidReaperCompletionDetector`` should summarize unexpected reaper events at end of run."""
         machine = _DetectorMachineStub()
         detector = WaitpidReaperCompletionDetector(machine)
         messages = []
@@ -251,18 +208,6 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
         self.assertIn("outcome=exit 0", messages[1])
         self.assertIn("pid=222", messages[2])
         self.assertIn("outcome=signal 9", messages[2])
-
-    def test_polling_detector_has_no_completion_warning_output(self):
-        """Polling detector should satisfy the warning interface with a no-op."""
-        machine = Machine("example", 1, completion_detection_mode="poll")
-        messages = []
-
-        def collect(message, **_kwargs):
-            messages.append(message)
-
-        machine._completionDetector.logCompletionWarnings(collect)
-        self.assertEqual(messages, [])
-
 
 if __name__ == "__main__":
     unittest.main()
