@@ -200,6 +200,7 @@ class lsfMachine (machines.Machine):
             print("%s options.ompNumThreads       = %s " % (DEBUG_LSF, options.ompNumThreads))
             print("%s options.sleepBeforeSrun     = %s " % (DEBUG_LSF, options.sleepBeforeSrun))
             print("%s options.continueFreq        = %s " % (DEBUG_LSF, options.continueFreq))
+            print("%s options.atsrFreq            = %s " % (DEBUG_LSF, options.atsrFreq))
             print("%s options.verbose             = %s " % (DEBUG_LSF, options.verbose))
             print("%s options.debug               = %s " % (DEBUG_LSF, options.debug))
             print("%s options.info                = %s " % (DEBUG_LSF, options.info))
