@@ -8,11 +8,11 @@ from ats.completion_waitpid_reaper import WaitpidReaperCompletionDetector
 class PerTestWatcherCompletionDetector(WaitpidReaperCompletionDetector):
     """Use one ``Popen.wait`` watcher thread per launched test.
 
-    This mode preserves ATS' historical completion behavior: each watcher
+    Each watcher
     waits on the exact child process owned by its test, then enqueues that
-    test for the shared fast-path drain. It avoids the process-wide
-    ``waitpid(-1)`` reaping used by ``waitpid_reaper`` while still avoiding
-    repeated full scans of the running-test list.
+    test for the shared fast-path drain.
+    This detector is thread safe, but may not scale beyond a few nodes of
+    concurrently running tests.
     """
 
     mode_name = "per_test_watcher"
