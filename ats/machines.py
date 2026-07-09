@@ -28,7 +28,7 @@ class MachineCore(object):
 
         Args:
             completion_detection_mode (str|None): Requested completion-detector
-                mode. When omitted, ATS falls back to ``"waitpid_reaper"``.
+                mode. When omitted, ATS falls back to ``"per_test_watcher"``.
 
         Returns:
             None: Completion detector state and hooks are initialized.
@@ -110,7 +110,7 @@ class MachineCore(object):
 
         Args:
             completion_detection_mode (str|None): Requested detector mode. When
-                omitted, ATS falls back to ``"waitpid_reaper"``.
+                omitted, ATS falls back to ``"per_test_watcher"``.
 
         Returns:
             object: Newly created completion detector strategy instance.

@@ -13,9 +13,9 @@ def normalize_completion_detection_mode(mode):
 
     Returns:
         str: Normalized lowercase mode name, defaulting to
-        ``"waitpid_reaper"``.
+        ``"per_test_watcher"``.
     """
-    return str(mode or "waitpid_reaper").strip().lower() or "waitpid_reaper"
+    return str(mode or "per_test_watcher").strip().lower() or "per_test_watcher"
 
 
 def _validate_completion_detection_mode_for_machine(machine, normalized_mode):

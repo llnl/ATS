@@ -108,14 +108,14 @@ class CompletionDetectorExamplesTest(unittest.TestCase):
             PerTestWatcherCompletionDetector,
         )
 
-    def test_waitpid_reaper_completion_detector_is_the_default_when_no_mode_is_requested(self):
-        """Default machine construction should use ``WaitpidReaperCompletionDetector``."""
+    def test_per_test_watcher_completion_detector_is_the_default_when_no_mode_is_requested(self):
+        """Default construction should use the detector without the waitpid reaper race."""
         machine = Machine("example", 1)
 
-        self.assertEqual(machine.completion_detection_mode, "waitpid_reaper")
+        self.assertEqual(machine.completion_detection_mode, "per_test_watcher")
         self.assertIsInstance(
             machine._completionDetector,
-            WaitpidReaperCompletionDetector,
+            PerTestWatcherCompletionDetector,
         )
 
     def test_flux_direct_rejects_threaded_completion_modes(self):
