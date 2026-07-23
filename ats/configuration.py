@@ -318,6 +318,10 @@ def add_more_options(parser):
                       help='''Frequency in minutes to write a continuation
                       file. The default is to only write a continuation file at
                       the end of the run, and only if any tests failed.''')
+    parser.add_option('--atsrFreq', type='float', default=None,
+                      help='''Frequency in minutes to write result
+                      files. The default is to only write a result file at
+                      the end of the run.''')
     parser.add_option('--cutoff', dest = 'cuttime',
                       help='''Over-rides job timelimit. All jobs will be TIMEOUT
                       at this time. The value may be given as a digit followed

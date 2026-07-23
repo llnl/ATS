@@ -208,6 +208,7 @@ ATS NOTICE: Slurm sees ATS or Shell as itself using a CPU.
             print("%s options.ompNumThreads       = %s " % (DEBUG_SLURM, options.ompNumThreads))
             print("%s options.cpusPerTask         = %s " % (DEBUG_SLURM, options.cpusPerTask))
             print("%s options.continueFreq        = %s " % (DEBUG_SLURM, options.continueFreq))
+            print("%s options.atsrFreq            = %s " % (DEBUG_SLURM, options.atsrFreq))
             print("%s options.quiet               = %s " % (DEBUG_SLURM, options.quiet))
             print("%s options.verbose             = %s " % (DEBUG_SLURM, options.verbose))
             print("%s options.debug               = %s " % (DEBUG_SLURM, options.debug))

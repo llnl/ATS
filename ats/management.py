@@ -1014,6 +1014,9 @@ class AtsManager(object):
             timeContinuation = time.time()
             # Convert minutes to seconds
             continuationStep = int(configuration.options.continueFreq * 60)
+        if configuration.options.atsrFreq is not None:
+            timeResult = time.time()
+            resultStep = int(configuration.options.atsrFreq * 60)
         while unfinished:
             timeNow = time.time()
             timePassed = timeNow - timeStatusReport
@@ -1031,7 +1034,11 @@ class AtsManager(object):
                 if (timeNow-timeContinuation) >= continuationStep:
                     self.continuationFile(interactiveTests, True)
                     timeContinuation = timeNow
-
+            if configuration.options.atsrFreq is not None:
+                timeNow = time.time()
+                if (timeNow-timeResult) >= resultStep:
+                    self.saveResults()
+                    timeResult = timeNow
 
     def getResults(self):
         """Returns an attribute dictionary containing the state of this
