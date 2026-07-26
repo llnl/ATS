@@ -60,6 +60,36 @@ class StandardScheduler (object):
             self.schedule(msg)
         return len(self.groups) > 0
 
+    def addInteractiveTests(self, interactiveTests):
+        """Add newly-discovered interactive tests after the scheduler is loaded.
+
+        Args:
+            interactiveTests (iterable): ATS tests discovered after the initial
+                ``load`` call.  ``AtsManager.core(stream=True)`` calls this on
+                the main thread as completed definitions are published.
+
+        Returns:
+            bool: ``True`` when at least one test was added; ``False`` when the
+            input iterable was empty.
+        """
+        interactiveTests = list(interactiveTests)
+        if not interactiveTests:
+            return False
+        self.calculatePriority(interactiveTests)
+        for t in interactiveTests:
+            if t.group not in self.groups:
+                self.groups.append(t.group)
+                t.group.totalPriority = t.totalPriority
+            else:
+                t.group.totalPriority = max(t.group.totalPriority, t.totalPriority)
+        self.groups.sort()
+
+        for t in interactiveTests:
+            msg = "%8d %8d %6d %6d %s" % \
+                  (t.totalPriority, t.priority, t.serialNumber, t.group.number, t.name)
+            self.schedule(msg)
+        return True
+
     def testlist(self):
         """Return the list of tests in groups that have not yet completed."""
         return chain(*self.groups)

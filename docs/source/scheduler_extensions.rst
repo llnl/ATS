@@ -49,6 +49,30 @@ A custom scheduler should preserve two invariants:
   readiness, but it should still call ``machine.canRunNow(test)`` or
   ``machine.startRun(test)`` before consuming resources.
 
+Lifecycle Hooks
+===============
+
+``manager.add_test_defined_hook(callback)``
+   Called when a completed test definition or group is published during
+   streaming discovery.  The callback receives the object passed to
+   ``manager.test_defined(value)``.
+
+``manager.remove_test_defined_hook(callback)``
+   Removes a previously registered test-defined callback.  Removing a callback
+   that is no longer registered is a no-op.
+
+``manager.test_defined(value)``
+   Publishes a completed definition to all currently registered callbacks.
+
+``manager.core(stream=True)``
+   Runs ATS with streaming discovery.  This mode collects tests on one worker
+   thread while the main thread schedules completed definitions published
+   through ``manager.test_defined``.
+
+Drivers that install hooks around one run should unregister them during
+cleanup.  Hook bodies should stay short and hand work to the driver's main
+scheduling thread when scheduler or machine state needs to change.
+
 ReadyWorkSet
 ============
 
@@ -88,7 +112,8 @@ Beginning Tutorial: A Cached Ready Scheduler
 A scheduler can use ``ReadyWorkSet`` to avoid rescanning every created test on
 every pass.  This example is intentionally small, but it includes the parts
 needed for a copied scheduler to stay correct: initial indexing, direct
-dependent updates, directory-block updates, and launch-failure recovery.
+dependent updates, directory-block updates, launch-failure recovery, and
+incremental loading from streaming discovery.
 
 ::
 
@@ -154,6 +179,19 @@ dependent updates, directory-block updates, and launch-failure recovery.
                # ``enqueue_if_ready`` calls back into scheduler policy.  The
                # ready set never decides what CREATED, waits, or blocks mean.
                self.ready.enqueue_if_ready(test, self.is_ready)
+
+       def load(self, interactive_tests):
+           # ``manager.core()`` calls this once after full collection.  The
+           # streaming path calls it once with an empty list before discovery
+           # starts, then feeds real work through ``addInteractiveTests``.
+           self.add_tests(interactive_tests)
+           return bool(interactive_tests)
+
+       def addInteractiveTests(self, interactive_tests):
+           # ``manager.core(stream=True)`` calls this on the main thread when a
+           # completed definition is published with ``manager.test_defined``.
+           self.add_tests(interactive_tests)
+           return bool(interactive_tests)
 
        def is_ready(self, test):
            # "Ready" here means structurally ready for scheduler consideration.
@@ -274,10 +312,44 @@ dependent updates, directory-block updates, and launch-failure recovery.
                    self.ready.enqueue_if_ready(test, self.is_ready)
                    return
 
+Streaming use has two driver-side requirements.  The driver installs the
+scheduler before entering ATS core, and test-definition code publishes only
+completed groups:
+
+::
+
+   ats.manager.machine.scheduler = ReadyScheduler()
+   ats.manager.core(stream=True)
+
+   # In the code that finishes defining one complete group:
+   ats.manager.test_defined(group)
+
+``core(stream=True)`` receives the published group, performs the same wait-edge
+and duplicate-name normalization that normally happens after collection, and
+then calls ``scheduler.addInteractiveTests()`` on the main thread.
+
 Production schedulers also need logging, retry behavior, group-output handling,
 periodic reports, and a cheap "work remains" check.  The example shows the
 division of labor: the ready set stores candidates; the scheduler owns
-dependency and block policy; the machine owns resource admission.
+dependency and block policy; ATS core owns streaming discovery; the machine owns
+resource admission.
+
+Beginning Tutorial: Streaming Discovery
+=======================================
+
+Streaming discovery overlaps expensive input parsing with test execution.  The
+safe pattern is single-producer discovery plus main-thread scheduling:
+
+1. The driver calls ``manager.core(stream=True)``.
+2. ``core(stream=True)`` registers ``manager.add_test_defined_hook``.
+3. A discovery thread calls ``manager.collectTests()``.
+4. Test definitions are pushed into a thread-safe queue by the hook.
+5. The main thread drains the queue, normalizes ATS dependencies and names, and
+   hands completed interactive tests to the scheduler.
+6. Only the main thread calls scheduler or machine methods.
+
+This pattern lets an allocation start useful work earlier while preserving ATS
+machine and scheduler state on one thread.
 
 Design Checklist
 ================
