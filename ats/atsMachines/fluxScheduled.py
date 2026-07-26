@@ -175,6 +175,15 @@ class FluxScheduled(lcMachines.LCMachineCore):
             raise IndexError(f"Relative index {rel_index} out of range (0-{len(nodes)-1})")
         return nodes[rel_index]
 
+    def getNumberOfProcessors(self):
+        """Return total schedulable processor slots in the Flux allocation.
+
+        Returns:
+            int: Total processor capacity ATS may schedule inside the current
+            Flux allocation.
+        """
+        return self.maxCores
+
 
     def kill(self, test):
         """
