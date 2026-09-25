@@ -1,6 +1,8 @@
 """Definition of class Machine for overriding.
 """
-import subprocess, sys, os, time, shlex
+from collections import deque
+import subprocess, sys, os, threading, time, shlex
+from ats.completion_detector import create_completion_detector
 from ats.atsut import RUNNING, TIMEDOUT, PASSED, FAILED, LSFERROR, \
      SKIPPED, HALTED, AtsError
 from ats.log import log, terminal
@@ -20,6 +22,27 @@ class MachineCore(object):
     canRunNow_debugClass = False
     printExperimentalNotice = False
     printSleepBeforeSrunNotice = True
+
+    def __init__(self, completion_detection_mode=None):
+        """Initialize machine-owned completion-detection state.
+
+        Args:
+            completion_detection_mode (str|None): Requested completion-detector
+                mode. When omitted, ATS falls back to ``"per_test_watcher"``.
+
+        Returns:
+            None: Completion detector state and hooks are initialized.
+        """
+        self._completionEvent = threading.Event()
+        self._completionQueue = deque()
+        self._completionQueueIds = set()
+        self._completionQueueLock = threading.Lock()
+        self._completionStats = {}
+        self._completionStatsLock = threading.Lock()
+        self._completion_span_hooks = []
+        self._completion_queue_snapshot_hooks = []
+        self._completionDetector = None
+        self.configureCompletionDetector(completion_detection_mode)
 
     # self.numberTestsRunningMax is not really the max number of tests running
     # but is rather the max number of processors which can run tests.
@@ -82,195 +105,480 @@ class MachineCore(object):
         #     return -1, fraction
         return 0, fraction
 
-    def checkRunning(self):
-        """Find those tests still running. getStatus checks for timeout.
+    def configureCompletionDetector(self, completion_detection_mode=None):
+        """Instantiate and install the requested completion detector.
+
+        Args:
+            completion_detection_mode (str|None): Requested detector mode. When
+                omitted, ATS falls back to ``"per_test_watcher"``.
+
+        Returns:
+            object: Newly created completion detector strategy instance.
         """
-        # print("DEBUG checkRunning 100\n")
-        from ats import configuration
-        time.sleep(self.naptime)
-        stillRunning = []
-        for test in self.running:
-            done = self.getStatus(test)
-            if not done:
-                stillRunning.append(test)
-            else:   # test has finished
-                if test.status is not PASSED:
-                    if configuration.options.oneFailure:
-                        raise AtsError("Test failed in oneFailure mode.")
-        self.running = stillRunning
+        self._completionDetector = create_completion_detector(
+            self,
+            completion_detection_mode,
+        )
+        self.completion_detection_mode = self._completionDetector.mode_name
+        return self._completionDetector
+
+    def checkRunning(self):
+        """Update ``self.running`` after checking for finished child processes.
+
+        Returns:
+            None: ``self.running`` is rewritten in place and completion
+            callbacks may run for newly finished tests.
+        """
+        self._completionDetector.check_running()
 
     def remainingCapacity(self):
         """How many processors are free? Could be overriden to answer the real question,
            what is the largest job you could start at this time?"""
         return self.numberTestsRunningMax - self.numberTestsRunning
 
-    def getStatus(self, test):
+    def getStatus(self, test, allow_running_checks=True):
         """
         Override this only if not using subprocess (unusual).
         Obtains the exit code of the test object process and then sets
         the status of the test object accordingly. Returns True if test done.
 
+        Args:
+            test: ATS test object whose child status should be checked.
+            allow_running_checks (bool): When ``False``, skip timeout and
+                running-error detection for children that have not yet exited.
+
         When a test has completed you must set test.statusCode and
         call self.testEnded(test, status). You may add a message as a third arg,
         which will be shown in the test's final report.
         testEnded will call your bookkeeping method noteEnd.
+
+        Returns:
+            bool: ``True`` when completion handling ran for ``test``, else
+            ``False`` while the child remains running.
         """
         from ats import configuration
-        test.child.poll()
-        # print(f"This is the return code for the test:{test.child.returncode}")
+        if self._observeCompletedChild(test):
+            return True
+
+        if not allow_running_checks:
+            return False
+
+        return self._checkRunningHealth(test)
+
+    def _observeCompletedChild(self, test):
+        """Finalize a child that has already exited if its return code is known.
+
+        Args:
+            test: ATS test object whose child may already be complete.
+
+        Returns:
+            bool: ``True`` when completion finalization ran.
+        """
+        self._pollChild(test)
         if test.child.returncode is None:
-            overtime, fraction = self.checkForTimeOut(test)
-            #print "DEBUG getStatus 100"
-            #print overtime
-            #print fraction
-            #print "DEBUG getStatus 200"
-            if fraction > .9 or overtime != 0:
-                # If a process produces a lot of output, it may fill its output
-                # buffer and then block until something is read from it.
+            return False
+        return self._finishCompletedTest(test)
 
-                # How should testStdout handle this? ???
-                #
-                # 2017-08-15 SAD putting back in poll, to see if it fixes hang.
-                if configuration.SYS_TYPE.startswith('somesystemxxx'):
-                    stdoutdata, stderrdata = test.child.communicate()
+    def _checkRunningHealth(self, test):
+        """Apply timeout and runtime-error checks to one still-running test.
 
-                # Now, poll it again.
-                test.child.poll()
+        Args:
+            test: ATS test object whose child is still expected to be running.
 
+        Returns:
+            bool: ``True`` when the health check finishes the test.
+        """
+        from ats import configuration
 
-        if test.child.returncode is None: #still running, but too long?
-            overtime, fraction = self.checkForTimeOut(test)
-            #print "DEBUG getStatus 300"
-            #print overtime
-            #print fraction
-            #print "DEBUG getStatus 400"
-            if overtime != 0:
-                self.kill(test)
-                test.statusCode = 2
-                test.setEndDateTime()
-                if overtime > 0:
-                    status = TIMEDOUT
-                else:
-                    status = HALTED  #one minute mode
-            else:
-                #print "DEBUG getStatus 320"
-                # SAD
-                # Coding to detect SLURM deficiencies, and abort job.
-                # Implemented 2016-Aug-30
-                slurm_error = False
-                f = open(test.errname, 'r', errors='replace')
-                lines = f.readlines()
-                f.close
-                for line in lines:
-                    if slurm_error == False:
-                        if "Slurmd could not set up environment for batch job" in line:
-                            print("ATS Halting test %s. Detected slurm launch failure : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "srun: error: Unable to create job step" in line:
-                            print("ATS Halting test %s. Detected slurm error : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "Error opening remote shared memory object in shm_open" in line:
-                            print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "PSM could not set up shared memory segment" in line:
-                            print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "Attempting to use an MPI routine before initializing MPICH" in line:
-                            print("ATS Halting test %s. Detected MPI Error : %s " % (test.name, line))
-                            slurm_error = True
-                        elif "Bus error)" in line:
-                            print("ATS Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
-                            slurm_error = True
+        overtime, fraction = self.checkForTimeOut(test)
+        if fraction > .9 or overtime != 0:
+            # If a process produces a lot of output, it may fill its output
+            # buffer and then block until something is read from it.
+            if configuration.SYS_TYPE.startswith('somesystemxxx'):
+                stdoutdata, stderrdata = test.child.communicate()
 
-                if slurm_error:
-                    self.kill(test)
-                    test.statusCode = 2
-                    test.setEndDateTime()
-                    status = HALTED
+            if self._observeCompletedChild(test):
+                return True
 
-                else:
-                    return False
-        else:
-            # print "DEBUG getStatus 400"
+        overtime, fraction = self.checkForTimeOut(test)
+        if overtime != 0:
+            self.kill(test)
+            test.statusCode = 2
             test.setEndDateTime()
-            test.statusCode = test.child.returncode
-            # If the user set ignoreReturnCode to True then set statusCode to 0.
-            ignoreReturnCode  = test.options.get('ignoreReturnCode', False)
-            if ignoreReturnCode:
-                test.statusCode = 0
-            if test.statusCode == 0:                               # process is done
-                status = PASSED
-            # This checks for flux timeouts since ATS' method for determining timeouts doesnt work with flux
-            elif "flux" in configuration.MACHINE_TYPE and test.statusCode == 142: # 142 is the return code for a timeout from flux
+            if overtime > 0:
                 status = TIMEDOUT
             else:
-                # Coding to detect LSF deficiencies
-                # Implemented 2018-12-12
-                lsf_error = False
-                f = open(test.errname, 'r', errors='replace')
+                status = HALTED
+            return self._completeTest(test, status)
+
+        if self._detectRunningSlurmError(test):
+            self.kill(test)
+            test.statusCode = 2
+            test.setEndDateTime()
+            return self._completeTest(test, HALTED)
+
+        return False
+
+    def _completionStatsEnabled(self):
+        """Return whether aggregated completion counters should be tracked.
+
+        Returns:
+            bool: ``True`` when completion statistics are enabled.
+        """
+        return bool(getattr(self, "completion_detection_stats", False))
+
+    def _completionSpansEnabled(self):
+        """Return whether internal completion spans should be emitted.
+
+        Returns:
+            bool: ``True`` when completion span hooks are enabled.
+        """
+        return bool(getattr(self, "completion_detection_spans", False))
+
+    def _incrementCompletionStat(self, name, amount=1):
+        """Increment one aggregated completion counter.
+
+        Args:
+            name (str): Counter key to increment.
+            amount (int): Value added to the counter.
+
+        Returns:
+            None: The in-memory stats dictionary is updated when enabled.
+        """
+        if not self._completionStatsEnabled():
+            return
+        with self._completionStatsLock:
+            self._completionStats[name] = self._completionStats.get(name, 0) + amount
+
+    def _completionStatsSnapshot(self):
+        """Return a copy of the current completion statistics.
+
+        Returns:
+            dict: Snapshot of aggregated completion counters.
+        """
+        with self._completionStatsLock:
+            return dict(self._completionStats)
+
+    def _addMachineHook(self, hook_attr, callback, description):
+        """Register a machine hook callback on one hook list.
+
+        Args:
+            hook_attr (str): Attribute name holding the callback list.
+            callback (callable): Hook function to register.
+            description (str): Human-readable hook name used in validation
+                errors.
+
+        Returns:
+            callable: The registered callback.
+        """
+        if not callable(callback):
+            raise AtsError("%s hook must be callable" % description)
+        hooks = getattr(self, hook_attr, None)
+        if hooks is None:
+            hooks = []
+            setattr(self, hook_attr, hooks)
+        hooks.append(callback)
+        return callback
+
+    def _removeMachineHook(self, hook_attr, callback):
+        """Remove a callback from one machine hook list if present.
+
+        Args:
+            hook_attr (str): Attribute name holding the callback list.
+            callback (callable): Hook function to remove.
+
+        Returns:
+            None: Missing callbacks are ignored.
+        """
+        hooks = getattr(self, hook_attr, None)
+        if hooks is None:
+            return
+        try:
+            hooks.remove(callback)
+        except ValueError:
+            pass
+
+    def add_completion_span_hook(self, callback):
+        """Register a callback for internal completion-detection timing spans.
+
+        Args:
+            callback (callable): Function called as
+                ``callback(name, start_us, end_us, metadata)``.
+
+        Returns:
+            callable: The registered callback.
+        """
+        return self._addMachineHook(
+            "_completion_span_hooks",
+            callback,
+            "completion span",
+        )
+
+    def remove_completion_span_hook(self, callback):
+        """Unregister a completion span callback.
+
+        Args:
+            callback (callable): Previously registered completion span hook.
+
+        Returns:
+            None: Missing callbacks are ignored.
+        """
+        self._removeMachineHook("_completion_span_hooks", callback)
+
+    def add_completion_queue_snapshot_hook(self, callback):
+        """Register a callback for completion queue depth snapshots.
+
+        Args:
+            callback (callable): Function called as
+                ``callback(timestamp_us, metadata)``.
+
+        Returns:
+            callable: The registered callback.
+        """
+        return self._addMachineHook(
+            "_completion_queue_snapshot_hooks",
+            callback,
+            "completion queue snapshot",
+        )
+
+    def remove_completion_queue_snapshot_hook(self, callback):
+        """Unregister a completion queue snapshot callback.
+
+        Args:
+            callback (callable): Previously registered queue snapshot hook.
+
+        Returns:
+            None: Missing callbacks are ignored.
+        """
+        self._removeMachineHook("_completion_queue_snapshot_hooks", callback)
+
+    def _recordCompletionInternalSpan(self, name, start_us, end_us, metadata=None):
+        """Emit one internal completion-detection timing span.
+
+        Args:
+            name (str): Span name.
+            start_us (int): Inclusive start timestamp in microseconds.
+            end_us (int): End timestamp in microseconds.
+            metadata (dict|None): Optional structured span metadata.
+
+        Returns:
+            None: Registered hooks are called when enabled.
+        """
+        if not self._completionSpansEnabled():
+            return
+        for callback in list(getattr(self, "_completion_span_hooks", [])):
+            callback(name, start_us, end_us, metadata or {})
+
+    def _recordCompletionQueueSnapshot(self, depth, reason, timestamp_us=None, metadata=None):
+        """Emit one completion-queue depth snapshot and update queue stats.
+
+        Args:
+            depth (int): Queue depth after the observed event.
+            reason (str): Short reason label for the snapshot.
+            timestamp_us (int|None): Event timestamp in microseconds. Uses the
+                current time when omitted.
+            metadata (dict|None): Optional extra snapshot metadata.
+
+        Returns:
+            None: Registered hooks are called when present.
+        """
+        if timestamp_us is None:
+            timestamp_us = time.time_ns() // 1000
+        depth = max(0, int(depth))
+        if self._completionStatsEnabled():
+            with self._completionStatsLock:
+                self._completionStats["completion_queue_depth_latest"] = depth
+                peak = int(self._completionStats.get("completion_queue_depth_peak", 0))
+                if depth > peak:
+                    self._completionStats["completion_queue_depth_peak"] = depth
+        payload = {
+            "completion_queue_depth": depth,
+            "reason": reason,
+        }
+        if metadata:
+            payload.update(metadata)
+        for callback in list(getattr(self, "_completion_queue_snapshot_hooks", [])):
+            callback(timestamp_us, payload)
+
+    def _pollChild(self, test):
+        """Poll one child process and return its current return code.
+
+        Args:
+            test: ATS test object whose ``child`` process should be polled.
+
+        Returns:
+            int|None: Child return code, or ``None`` while still running.
+        """
+        if self._completionDetector.owns_child_reaping():
+            return test.child.returncode
+        test.child.poll()
+        return test.child.returncode
+
+    def _preserve_new_running_tests(self, remaining, seen_ids):
+        """Keep tests appended to ``self.running`` during a running-state scan.
+
+        Args:
+            remaining (list): Running tests that should remain after the scan.
+            seen_ids (set): Object ids already considered in the current pass.
+
+        Returns:
+            None: ``remaining`` is updated in place.
+        """
+        remaining_ids = {id(test) for test in remaining}
+        for test in self.running:
+            test_id = id(test)
+            if test_id in seen_ids or test_id in remaining_ids:
+                continue
+            remaining.append(test)
+            remaining_ids.add(test_id)
+
+    def scan_running_tests_for_health(self):
+        """Check still-running tests for timeout and runtime launch failures.
+
+        Returns:
+            int: Number of running tests completed by health checks.
+        """
+        # Work on a snapshot so completion callbacks can append to
+        # ``self.running`` without disturbing this scan.
+        ordered = list(self.running)
+        seen_ids = {id(test) for test in ordered}
+        remaining = []
+        completed = 0
+        for test in ordered:
+            if getattr(test.child, "returncode", None) is not None:
+                remaining.append(test)
+                continue
+            if self._checkRunningHealth(test):
+                completed += 1
+                continue
+            remaining.append(test)
+        self._preserve_new_running_tests(remaining, seen_ids)
+        self.running = remaining
+        return completed
+
+    def _finishCompletedTest(self, test):
+        """Finalize status selection for a child that has already exited.
+
+        Args:
+            test: ATS test object whose child return code is available.
+
+        Returns:
+            bool: ``True`` after the completion has been fully handled.
+        """
+        from ats import configuration
+
+        if getattr(test, "ats_returncode_observed_us", None) is None:
+            test.ats_returncode_observed_us = time.time_ns() // 1000
+        test.setEndDateTime()
+        test.statusCode = test.child.returncode
+        # If the user set ignoreReturnCode to True then set statusCode to 0.
+        ignoreReturnCode  = test.options.get('ignoreReturnCode', False)
+        if ignoreReturnCode:
+            test.statusCode = 0
+        if test.statusCode == 0:
+            status = PASSED
+        # TODO: move this machine specific check to flux-specific machine files
+        # This checks for flux timeouts since ATS' method for determining timeouts doesnt work with flux
+        elif "flux" in configuration.MACHINE_TYPE and test.statusCode == 142:
+            # Flux reports scheduler-enforced timeouts as return code 142.
+            status = TIMEDOUT
+        else:
+            # Preserve ATS' historical LSF launch/runtime deficiency checks.
+            lsf_error = False
+            with open(test.errname, 'r', errors='replace') as f:
                 lines = f.readlines()
-                f.close
+            for line in lines:
+                if lsf_error == False:
+                    if "Terminated while pending" in line:
+                        print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
+                        lsf_error = True
+                    elif "JSM daemon timed" in line:
+                        print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
+                        lsf_error = True
+                    elif "Error initializing RM" in line:
+                        print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
+                        lsf_error = True
+                    elif "Bus error)" in line:
+                        print("ATS ERROR: Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
+                        lsf_error = True
+
+            if not lsf_error:
+                with open(test.outname, 'r', errors='replace') as f:
+                    lines = f.readlines()
                 for line in lines:
                     if lsf_error == False:
-                        if "Terminated while pending" in line:
+                        if "ATS Error: Locate pipe file" in line:
                             print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
                             lsf_error = True
-                        elif "JSM daemon timed" in line:
+                        elif "Could not read jskill" in line:
+                            print("ATS ERROR: Detected LSF Job Scheduler Error %s.  : %s " % (test.name, line))
+                            lsf_error = True
+                        elif "AST Error: initializing RM" in line:
                             print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
                             lsf_error = True
-                            #time.sleep(10)      # See if sleeiping helps the JSM daemon recover
-                        elif "Error initializing RM" in line:
-                            print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
-                            lsf_error = True
-                            #time.sleep(10)      # See if sleeiping helps the JSM daemon recover
-                        elif "Bus error)" in line:
-                            print("ATS ERROR: Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
-                            lsf_error = True
 
-                if not lsf_error:
-                    f = open(test.outname, 'r', errors='replace')
-                    lines = f.readlines()
-                    f.close
-                    for line in lines:
-                        if lsf_error == False:
-                            if "ATS Error: Locate pipe file" in line:
-                                print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
-                                lsf_error = True
-                            elif "Could not read jskill" in line:
-                                print("ATS ERROR: Detected LSF Job Scheduler Error %s.  : %s " % (test.name, line))
-                                lsf_error = True
-                            elif "AST Error: initializing RM" in line:
-                                print("ATS ERROR: Detected LSF Job Start Error %s.  Detected LSF launch failure : %s " % (test.name, line))
-                                lsf_error = True
+            if lsf_error:
+                print("ATS LSF Development: LSFE Detected statusCode is %d " % test.statusCode)
+                test.statusCode = 2
+                test.setEndDateTime()
+                status = LSFERROR
+            else:
+                status = FAILED
 
+        return self._completeTest(test, status)
 
-                #sys.exit(-1) SAD ambyr
-                #print "DEBUG getStatus 420 statusCode is %d " % test.statusCode
-                if lsf_error:
-                    print("ATS LSF Development: LSFE Detected statusCode is %d " % test.statusCode)
-                    test.statusCode = 2
-                    test.setEndDateTime()
-                    status = LSFERROR
+    def _completeTest(self, test, status):
+        """Run completion bookkeeping for a finished test.
 
-                else:
-                    status = FAILED
+        Args:
+            test: ATS test object that has finished.
+            status: ATS status object chosen for the finished test.
 
-
-        # Send test's stdout/stderr to file and to terminal
+        Returns:
+            bool: Always ``True`` after completion handling runs.
+        """
         if test.stdOutLocGet() == 'both':
             outhandle, errhandle = test.fileHandleGet()
             for line in test.child.stdout:
                 print(line)
                 print(line, file=outhandle)
 
+        self._completionDetector.unregister_finished_test(test)
         self.testEnded(test, status)
-
-        #if hasattr(test, 'runningWithinSalloc'):
-        #    if test.runningWithinSalloc == True:
-        #        print "DEBUG Sleeping 1 sec after job end %s" % test.name
-        #        time.sleep(1)
-
         return True
+
+    # TODO: move Slurm specific checks to slurm machine file
+    def _detectRunningSlurmError(self, test):
+        """Check a still-running test for known SLURM launch/runtime failures.
+
+        Args:
+            test: ATS test object whose stderr should be inspected.
+
+        Returns:
+            bool: ``True`` when a known SLURM-related fatal error was found.
+        """
+        with open(test.errname, 'r', errors='replace') as f:
+            lines = f.readlines()
+        for line in lines:
+            if "Slurmd could not set up environment for batch job" in line:
+                print("ATS Halting test %s. Detected slurm launch failure : %s " % (test.name, line))
+                return True
+            elif "srun: error: Unable to create job step" in line:
+                print("ATS Halting test %s. Detected slurm error : %s " % (test.name, line))
+                return True
+            elif "Error opening remote shared memory object in shm_open" in line:
+                print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
+                return True
+            elif "PSM could not set up shared memory segment" in line:
+                print("ATS Halting test %s. Detected MPI shared memory failure : %s " % (test.name, line))
+                return True
+            elif "Attempting to use an MPI routine before initializing MPICH" in line:
+                print("ATS Halting test %s. Detected MPI Error : %s " % (test.name, line))
+                return True
+            elif "Bus error)" in line:
+                print("ATS Halting test %s. Detected Bus Error (perhaps MPI related) : %s " % (test.name, line))
+                return True
+        return False
 
     def testEnded(self, test, status):
         """Do book-keeping when a job has exited;
@@ -660,8 +968,8 @@ The subprocess part of launch. Also the part that might fail.
                 else:
                     test.child = subprocess.Popen(test.commandList, cwd=test.directory, stdout = subprocess.PIPE, stderr=subprocess.STDOUT, env=E, stdin=testStdin)
 
+            self._completionDetector.register_launched_test(test)
             test.set(RUNNING, test.commandLine)
-
             self.running.append(test)
             self.numberTestsRunning += 1
             if MachineCore.debugClass or MachineCore.canRunNow_debugClass:
@@ -797,12 +1105,17 @@ However, the most important methods have a "basic" verison you can just call.
 You can call your class anything, just put the correct comment line at
 the top of your machine. See documentation for porting.
 """
-    def __init__(self, name, npMaxH):
+    def __init__(self, name, npMaxH, completion_detection_mode=None):
         """Be sure to call this from child if overridden
 
 Initialize this machine. npMax supplied by __init__, hardware limit.
 If npMax is negative, may be overridden by command line. If positive,
 is hard upper limit.
+
+Args:
+    name (str): ATS machine type label.
+    npMaxH (int): Hardware processor-slot limit.
+    completion_detection_mode (str|None): Requested completion detector mode.
 """
 
         # print "DEBUG Machine:MachineCore %s %d" % (name, npMaxH)
@@ -816,6 +1129,9 @@ is hard upper limit.
         self.hardLimit = (npMaxH > 0)
         self.naptime = 0.2 #number of seconds to sleep between checks on running tests.
         self.running = []
+        super(Machine, self).__init__(
+            completion_detection_mode=completion_detection_mode,
+        )
         self.runOrder = 0
         from ats import schedulers
         self.scheduler = schedulers.StandardScheduler()

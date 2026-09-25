@@ -49,6 +49,72 @@ A custom scheduler should preserve two invariants:
   readiness, but it should still call ``machine.canRunNow(test)`` or
   ``machine.startRun(test)`` before consuming resources.
 
+Completion Detectors
+====================
+
+ATS machines delegate running-test completion policy to a completion detector.
+The detector keeps strategy choice out of ``MachineCore.checkRunning()`` while
+reusing the same machine-owned helpers for completion queues, polling, and
+aggregated completion statistics.
+
+ATS ships three detector types:
+
+* ``ats.completion_waitpid_reaper.WaitpidReaperCompletionDetector`` owns child reaping
+  with a dedicated ``waitpid`` reaper and records completed tests into a queue.
+  It has the lowest steady-state overhead, but it still carries the known
+  ``waitpid(-1)`` race and is unsupported for ``FluxDirect``.
+* ``ats.completion_per_test_watcher.PerTestWatcherCompletionDetector`` spawns one
+  watcher thread per running test. That avoids the ``waitpid(-1)`` race, but
+  it scales with the number of active children because each child keeps its own
+  waiting thread.
+* ``ats.completion_poll.PollingCompletionDetector`` preserves the plain
+  sleep-then-poll behavior. It is the simplest comparison baseline, but
+  completion latency and polling work both scale with the scheduler interval.
+
+Completion counters and timing spans are opt-in. Machines only update the
+aggregated counters when ``completion_detection_stats`` is enabled, and they
+only emit internal span hooks when ``completion_detection_spans`` is enabled.
+
+The ATS initialization path accepts ``completion_detection_mode`` and passes it
+through machine construction:
+
+::
+
+   import ats
+
+   ats.manager.init(
+       clas="...",
+       completion_detection_mode="waitpid_reaper",
+   )
+
+Machine constructors also accept the same argument directly and instantiate the
+matching detector:
+
+::
+
+   from ats.machines import Machine
+
+   machine = Machine(
+       "generic",
+       -1,
+       completion_detection_mode="waitpid_reaper",
+   )
+
+Custom machine subclasses should pass the mode through to ``Machine`` so the
+selection stays explicit at construction time:
+
+::
+
+   from ats import machines
+
+   class MyMachine(machines.Machine):
+       def __init__(self, name, npMaxH, completion_detection_mode="waitpid_reaper"):
+           super(MyMachine, self).__init__(
+               name,
+               npMaxH,
+               completion_detection_mode=completion_detection_mode,
+           )
+
 ReadyWorkSet
 ============
 

@@ -11,6 +11,7 @@ until we process the options and get the desired properties.
 from argparse import ArgumentParser
 from glob import glob
 import importlib
+import inspect
 import os
 import re
 import sys
@@ -478,7 +479,69 @@ def get_machine_factory(module_name, machine_class,
             log(f"Importing {module_name} from {machine_package} caused the following error:\n{e}", echo=True)
             return None
 
-def get_machine(file_text, file_name, is_batch=False):
+def _instantiate_machine(machine_factory,
+                         machine_name,
+                         npMaxH,
+                         completion_detection_mode=None):
+    """Instantiate a machine factory with optional detector selection.
+
+    Args:
+        machine_factory (callable): Factory or class used to build the machine.
+        machine_name (str): Machine name passed to the constructor.
+        npMaxH (int|str): Hardware processor-slot limit for the machine.
+        completion_detection_mode (str|None): Requested completion detector
+            mode. When the factory supports it, the mode is passed as a keyword
+            argument. Older two-argument constructors remain supported.
+
+    Returns:
+        object: Instantiated machine object.
+    """
+    npMaxH = int(npMaxH)
+    if completion_detection_mode is None:
+        return machine_factory(machine_name, npMaxH)
+
+    try:
+        signature = inspect.signature(machine_factory)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        parameters = signature.parameters.values()
+        supports_mode_kwarg = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "completion_detection_mode"
+            for parameter in parameters
+        )
+        if not supports_mode_kwarg:
+            return machine_factory(machine_name, npMaxH)
+
+    try:
+        return machine_factory(
+            machine_name,
+            npMaxH,
+            completion_detection_mode=completion_detection_mode,
+        )
+    except TypeError:
+        return machine_factory(machine_name, npMaxH)
+
+def get_machine(file_text,
+                file_name,
+                is_batch=False,
+                completion_detection_mode=None):
+    """Create the machine declared in one machine-specification file.
+
+    Args:
+        file_text (str): Full text of the candidate machine module.
+        file_name (str): Basename of the candidate machine module.
+        is_batch (bool): When ``True``, search ``#BATS:`` declarations instead
+            of ``#ATS:`` declarations.
+        completion_detection_mode (str|None): Requested completion detector
+            mode to pass through machine construction when supported.
+
+    Returns:
+        object|None: Matching machine instance, or ``None`` when the file does
+        not define the active machine type.
+    """
     header = '#BATS:' if is_batch else '#ATS:'
     machine_type = BATCH_TYPE if is_batch else MACHINE_TYPE
     ats_lines = (ats_line for ats_line in file_text.splitlines()
@@ -507,7 +570,12 @@ def get_machine(file_text, file_name, is_batch=False):
                           f"import {machine_class} as Machine")
 
             if machine_factory:
-                machine = machine_factory(machine_name, int(npMaxH))
+                machine = _instantiate_machine(
+                    machine_factory,
+                    machine_name,
+                    npMaxH,
+                    completion_detection_mode=completion_detection_mode,
+                )
                 break
 
     else:
@@ -515,7 +583,7 @@ def get_machine(file_text, file_name, is_batch=False):
 
     return machine
 
-def get_machine_entry_points(machine_class):
+def get_machine_entry_points(machine_class, completion_detection_mode=None):
     """
     Looks for custom machine type via entry_points plugins
     installed by ats wrappers.
@@ -525,6 +593,16 @@ def get_machine_entry_points(machine_class):
     Batch mode not really supported this way? -> would want
     to tag batch vs ats headers as an instance/class variable
     instead in this mode rather than rely on the header comments
+
+    Args:
+        machine_class (str): Machine type to resolve through installed entry
+            points.
+        completion_detection_mode (str|None): Requested completion detector
+            mode to pass through machine construction when supported.
+
+    Returns:
+        object|None: Machine instance loaded from an entry-point plugin, or
+        ``None`` when no plugin matches.
     """
     log("Machine Factory: looping over available machine plugins:",
         echo=False)
@@ -535,7 +613,12 @@ def get_machine_entry_points(machine_class):
         for machine_factory in ats_machines:
             if machine_class in machine_factory.value:
                 log(f"Machine Factory: Found machine {machine_factory.name} of class {machine_factory.value}: {machine_factory}")
-                return machine_factory.load()(machine_class, -1)
+                return _instantiate_machine(
+                    machine_factory.load(),
+                    machine_class,
+                    -1,
+                    completion_detection_mode=completion_detection_mode,
+                )
     else:
         ats_machines = {machine.name: machine
                         for group, machines in entry_points().items()
@@ -545,17 +628,33 @@ def get_machine_entry_points(machine_class):
         for name, machine_factory in ats_machines.items():
             if machine_class in machine_factory.value:
                 log(f"Machine Factory: Found machine {name} of class {machine_class}: {machine_factory}")
-                return machine_factory.load()(machine_class, -1)
+                return _instantiate_machine(
+                    machine_factory.load(),
+                    machine_class,
+                    -1,
+                    completion_detection_mode=completion_detection_mode,
+                )
 
     # Downstream needs to be able to detect if machine isn't found
     return None
 
 
-def init(clas = '', adder = None, examiner=None):
-    """Called by manager.init(class, adder, examiner)
-       Initialize configuration and process command-line options; create log,
-       options, inputFiles, timelimit, machine, and batchmatchine.
-       Call backs to machine and to adder/examiner for options.
+def init(clas = '', adder = None, examiner=None,
+         completion_detection_mode=None):
+    """Initialize ATS configuration, options, and machine instances.
+
+    Args:
+        clas (str): ATS command-line string to parse instead of
+            ``sys.argv[1:]``.
+        adder (callable|None): Optional callback that adds parser options
+            before ATS parses the command line.
+        examiner (callable|None): Optional callback that inspects parsed
+            options after initialization.
+        completion_detection_mode (str|None): Requested completion detector
+            mode to pass through machine construction when supported.
+
+    Returns:
+        None: Module-level ATS configuration state is updated in place.
     """
     global log, options, inputFiles, timelimit, machine, batchmachine,\
            defaultExecutable, ATSROOT, cuttime
@@ -603,25 +702,41 @@ def init(clas = '', adder = None, examiner=None):
 
         file_name = os.path.basename(full_path)
         if not machine and re.search(ATS_PATTERN, file_text):
-            machine = get_machine(file_text, file_name)
+            machine = get_machine(
+                file_text,
+                file_name,
+                completion_detection_mode=completion_detection_mode,
+            )
             specFoundIn = full_path
 
         if not batchmachine and re.search(BATS_PATTERN, file_text):
-            batchmachine = get_machine(file_text, file_name, is_batch=True)
+            batchmachine = get_machine(
+                file_text,
+                file_name,
+                is_batch=True,
+                completion_detection_mode=completion_detection_mode,
+            )
             bspecFoundIn = full_path
 
         if machine and batchmachine:
             break
 
     # Check entry_points plugins to override built-in machines
-    machine_plugin = get_machine_entry_points(MACHINE_TYPE)
+    machine_plugin = get_machine_entry_points(
+        MACHINE_TYPE,
+        completion_detection_mode=completion_detection_mode,
+    )
 
     if machine_plugin:
         machine = machine_plugin
 
     if machine is None:
         terminal("No machine specifications for", SYS_TYPE, "found, using generic.")
-        machine = machines.Machine('generic', -1)
+        machine = machines.Machine(
+            'generic',
+            -1,
+            completion_detection_mode=completion_detection_mode,
+        )
 
 # create the option set
     usage = "usage: %(prog)s [options] [input files]"
