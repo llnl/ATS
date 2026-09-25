@@ -3,6 +3,7 @@
 import subprocess, sys, os, time, shlex
 from ats.atsut import RUNNING, TIMEDOUT, PASSED, FAILED, LSFERROR, \
      SKIPPED, HALTED, AtsError
+from ats.cwd import chdir
 from ats.log import log, terminal
 from shutil import copytree, ignore_patterns
 
@@ -291,14 +292,12 @@ class MachineCore(object):
         verbose                     = configuration.options.debug
 
         if not (globalPostrunScript == "unset"):
-            here = os.getcwd()
-            os.chdir(test.directory)
-            if os.path.exists(globalPostrunScript):
-                self._executePreOrPostRunScript(globalPostrunScript, test, verbose, globalPostrunScript_outname)
-            else:
-                log("ATS ERROR: globalPostrunScript %s not found" % (globalPostrunScript), echo=True)
-                sys.exit(-1)
-            os.chdir(here)
+            with chdir(test.directory):
+                if os.path.exists(globalPostrunScript):
+                    self._executePreOrPostRunScript(globalPostrunScript, test, verbose, globalPostrunScript_outname)
+                else:
+                    log("ATS ERROR: globalPostrunScript %s not found" % (globalPostrunScript), echo=True)
+                    sys.exit(-1)
 
         self.numberTestsRunning -= 1
         if MachineCore.debugClass or MachineCore.canRunNow_debugClass:
@@ -557,14 +556,12 @@ The subprocess part of launch. Also the part that might fail.
 
 
         if not (globalPrerunScript == "unset"):
-            here = os.getcwd()
-            os.chdir(test.directory)
-            if os.path.exists(globalPrerunScript):
-                self._executePreOrPostRunScript(globalPrerunScript, test, verbose, globalPrerunScript_outname)
-            else:
-                log("ATS ERROR: globalPrerunScript %s not found" % (globalPrerunScript), echo=True)
-                sys.exit(-1)
-            os.chdir(here)
+            with chdir(test.directory):
+                if os.path.exists(globalPrerunScript):
+                    self._executePreOrPostRunScript(globalPrerunScript, test, verbose, globalPrerunScript_outname)
+                else:
+                    log("ATS ERROR: globalPrerunScript %s not found" % (globalPrerunScript), echo=True)
+                    sys.exit(-1)
 
         try:
             Eadd    = test.options.get('env', None)
